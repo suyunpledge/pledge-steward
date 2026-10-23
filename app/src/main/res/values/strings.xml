@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_desc">允许 Forge 读取当前界面。设备操作确认功能尚未交付，当前版本不会自动点击或输入。</string>
+</resources>

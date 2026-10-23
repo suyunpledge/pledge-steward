@@ -26,6 +26,7 @@ class ForgeAccessibility : AccessibilityService() {
     }
 
     override fun onInterrupt() {}
+    override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {}
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         instance = null
         return super.onUnbind(intent)
@@ -100,13 +101,25 @@ class ForgeAccessibility : AccessibilityService() {
         fun takeScreenshot(timeoutMs: Long = 3000): Bitmap? {
             val svc = instance ?: return null
             if (Build.VERSION.SDK_INT < 30) return null
+            return takeScreenshot30(svc, timeoutMs)
+        }
+
+        @androidx.annotation.RequiresApi(30)
+        private fun takeScreenshot30(svc: ForgeAccessibility, timeoutMs: Long): Bitmap? {
             var holder: Bitmap? = null
             val latch = java.util.concurrent.CountDownLatch(1)
-            svc.takeScreenshot(executor) { screenshot ->
-                runCatching { holder = screenshot?.softwareBitmapCopy(
-                    Bitmap.Config.ARGB_8888) }
-                latch.countDown()
-            }
+            svc.takeScreenshot(android.view.Display.DEFAULT_DISPLAY, executor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        result.hardwareBuffer.use { buffer ->
+                            val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                            holder = hardware?.copy(Bitmap.Config.ARGB_8888, false)
+                            hardware?.recycle()
+                        }
+                        latch.countDown()
+                    }
+                    override fun onFailure(errorCode: Int) { latch.countDown() }
+                })
             latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
             @Suppress("UNCHECKED_CAST") return holder
         }
@@ -121,10 +134,10 @@ class ForgeAccessibility : AccessibilityService() {
                     .addStroke(GestureDescription.StrokeDescription(path, 0, durMs))
                     .build()
                 val ok = svc.dispatchGesture(gd, object : GestureResultCallback() {
-                    override fun onCompleted(g: GestureDescription?) { cont.resume(true) }
-                    override fun onCancelled(g: GestureDescription?) { cont.resume(false) }
+                    override fun onCompleted(g: GestureDescription?) { if (cont.isActive) cont.resume(true) }
+                    override fun onCancelled(g: GestureDescription?) { if (cont.isActive) cont.resume(false) }
                 }, null)
-                if (!ok) cont.resume(false)
+                if (!ok) if (cont.isActive) cont.resume(false)
             }
         }
 

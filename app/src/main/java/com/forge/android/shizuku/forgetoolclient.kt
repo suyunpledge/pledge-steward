@@ -1,5 +1,6 @@
 package com.forge.android.shizuku
 
+import rikka.shizuku.Shizuku
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
@@ -36,7 +37,7 @@ object ForgeToolClient {
             ComponentName(context, ForgeToolService::class.java))
             .daemon(false)
             .processNameSuffix("forge_tools")
-            .debuggable(android.os.BuildConfig.DEBUG)
+            .debuggable(false)
             .version(1)
         runCatching { Shizuku.bindUserService(args, connection) }
             .onFailure { Log.w(TAG, "bind failed: ${it.message}") }

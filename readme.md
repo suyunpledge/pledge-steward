@@ -1,5 +1,10 @@
 # forge-android — Kotlin Compose 壳 + PRoot Ubuntu 24 + Shizuku + forge Python Agent
 
+当前为开发构建，审查结果见 [AUDIT-2026-10-23](docs/AUDIT-2026-10-23.md)。
+原生 PRoot/busybox、设备工具分发和操作确认 UI 仍未全部交付，不能把 APK
+编译成功视为真机 Agent 已可用。设备写操作当前明确拒绝，桥仅发布宿主实际
+上报的设备能力。HTTP/WS 使用安装级 Bearer token，Android loopback 并非 App 私有网络。
+
 > 安卓原生 App（Compose，非 WebView）。forge Python Agent 原样跑在 PRoot Ubuntu 24.04 用户态里（免 root、免 Termux），不动一行 forge 代码；Android 控制能力走 Shizuku（ADB shell 身份）+ 无障碍双通道；壳与 Agent 之间只加一层 FastAPI/Uvicorn + WebSocket 桥。
 
 ## 架构（分层定稿）

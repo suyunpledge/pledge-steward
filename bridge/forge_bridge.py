@@ -17,11 +17,13 @@ import json
 import os
 import subprocess
 import time
+import secrets
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 FORGE_ROOT = Path(os.environ.get("FORGE_ROOT", "/opt/forge"))
@@ -40,39 +42,27 @@ for p in (HOME, WORKSPACE, HOME / "sessions"):
 
 BOOT_T = time.time()
 app = FastAPI(title="forge-bridge", version="0.2.0")
+TOKEN = os.environ.get('FORGE_BRIDGE_TOKEN', '')
+
+
+def authorized(value):
+    return len(TOKEN) >= 32 and secrets.compare_digest(
+        (value or '').encode('utf-8'), ('Bearer ' + TOKEN).encode('utf-8'))
+
+
+@app.middleware('http')
+async def authenticate(request, call_next):
+    # Android loopback is shared with other apps, not an app-private namespace.
+    if request.url.path != '/health' and not authorized(request.headers.get('authorization')):
+        return JSONResponse({'detail':'unauthorized'},status_code=401)
+    return await call_next(request)
 
 _sessions: dict[str, Agent] = {}
 _agent_lock = asyncio.Lock()
 
 
-class _FakeReport:
-    answer = "done-answer"
-    steps = 3
-    cost = 0.42
-
-
-class _FakeSession:
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
-
-
-class _FakeAgent:
-    def __init__(self):
-        self.session = _FakeSession()
-        self.attached: list = []
-
-    def attach_tools(self, tools):
-        self.attached = tools
-
-    def run(self, task, history=None, run_request=None):
-        return _FakeReport()
-
 # android.* 工具面：Kotlin 经 /capabilities 上报（Shizuku 状态决定子集）
-_android_tools: set[str] = {
-    # 基线（纯 Accessibility，永远可用）
-    "android.screen.inspect", "android.ui.click", "android.ui.swipe",
-    "android.ui.input", "android.device.info",
-}
+_android_tools: set[str] = set()  # No device tools until the authenticated host reports readiness.
 # Shizuku 增量（在线时由 Kotlin 上报追加）
 _SHIZUKU_ONLY = {"android.screen.capture", "android.app.list", "android.app.launch"}
 
@@ -88,13 +78,11 @@ async def set_capabilities(payload: CapabilitiesPayload):
     base = {"android.screen.inspect", "android.ui.click", "android.ui.swipe",
             "android.ui.input", "android.device.info"}
     extra = set(payload.tools) & _SHIZUKU_ONLY if payload.shizuku == "online" else set()
-    _android_tools = base | extra
+    _android_tools = (set(payload.tools) & base) | extra
     return {"registered": sorted(_android_tools), "shizuku": payload.shizuku}
 
 
 def _build_session_agent(session_id: str, exposed_tools: set[str] | None = None) -> Agent:
-    if os.environ.get("FORGE_BRIDGE_FAKE_AGENT") == "1":
-        return _FakeAgent()   # 测试钩子：契约冒烟用（标记于环境变量，生产不设）
     """按 forge.cli 标准姿势装配会话 Agent。
 
     android.* 以注册表形式暴露（expose 面收敛）；linux.* 走 forge 内建
@@ -153,6 +141,12 @@ async def _dispatch_android_tool(tool: str, arguments: dict[str, Any], emit) -> 
 # ── WS 主通道 ───────────────────────────────────────────────────
 @app.websocket("/agent/ws")
 async def agent_ws(ws: WebSocket):
+    if not authorized(ws.headers.get('authorization')):
+        await ws.close(code=1008)
+        return
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', ws.query_params.get('session','default')):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     session_id = ws.query_params.get("session", "default")
     # 关键：本 handler 的 loop 显式传出——observer 在 worker 线程里
@@ -189,10 +183,12 @@ async def agent_ws(ws: WebSocket):
                 await emit({"type": "pong", "t": time.time()})
             elif kind == "reset":
                 _sessions.pop(session_id, None)
+                agent = _build_session_agent(session_id)
+                _sessions[session_id] = agent
                 await emit({"type": "reset_ok"})
             elif kind == "refresh_tools":
                 # Shizuku 状态变化：重建 Agent（expose 面更新）
-                _sessions[session_id] = _build_session_agent(session_id, _android_tools)
+                # Tool adapters are refreshed at the start of the next run.
                 await emit({"type": "capabilities", "tools": sorted(_android_tools)})
             else:
                 await emit({"type": "error", "error": f"unknown type {kind!r}"})
@@ -201,15 +197,11 @@ async def agent_ws(ws: WebSocket):
 
 
 async def _run_agent(agent: Agent, task: str, history: list, emit, ws_loop=None) -> None:
-    """一轮任务；observer 事件 + android.* 工具请求都经 emit 流出。
+    """Run the real Agent registry in a worker; send device reads on the WS loop.
 
-    android.* 拦截：forge 的 observer 会给出 tool_call 事件；真正的执行
-    拦截在工具层做——注册的 android.* 工具实现就是 _dispatch_android_tool
-    的闭包（见 bridge 的工具注册补丁：expose 挂名，执行走回调）。
-    v0.2 简化：工具执行不经 forge ToolRegistry 深改，由 run 前注入的
-    RuntimeBridge 工具类承接（forge.loop 支持外部工具对象注册）。
+    Device writes remain denied until the Kotlin approval UI is implemented.
     """
-    from bridge_tools import make_android_tools  # 同目录：工具注册适配层
+    from bridge_tools import register_android_tools  # 同目录：工具注册适配层
 
     loop = ws_loop or asyncio.get_running_loop()
     done = loop.create_future()
@@ -222,13 +214,15 @@ async def _run_agent(agent: Agent, task: str, history: list, emit, ws_loop=None)
 
     def _worker():
         try:
-            agent.attach_tools(make_android_tools(_dispatch_android_tool, emit))
+            if hasattr(agent, "registry"):
+                register_android_tools(agent.registry,_android_tools,_dispatch_android_tool,emit,loop)
+                agent._observer = observer
             with agent.session:
                 report = agent.run(task, history=history)
             summary = {
-                "answer": getattr(report, "answer", "") or "",
-                "steps": getattr(report, "steps", 0),
-                "cost": float(getattr(report, "cost", 0.0) or 0.0),
+                "answer": getattr(report, "text", getattr(report, "answer", "")) or "",
+                "steps": len(report.steps) if isinstance(report.steps,list) else report.steps,
+                "cost": float(getattr(report, "usage", {}).get("cost", 0.0) or 0.0),
             }
             loop.call_soon_threadsafe(done.set_result, summary)
         except Exception as exc:            # noqa: BLE001
@@ -257,7 +251,10 @@ async def agent_run(body: RunBody):
             await q.put(ev)
 
         async def drive():
-            agent = _sessions.setdefault("sse", _build_session_agent("sse"))
+            agent = _sessions.get("sse")
+            if agent is None:
+                agent = _build_session_agent("sse")
+                _sessions["sse"] = agent
             await _run_agent(agent, body.task, body.history or [], emit)
             await q.put(None)
 
@@ -275,7 +272,6 @@ async def agent_run(body: RunBody):
 @app.get("/health")
 async def health():
     return {"status": "ok", "pid": os.getpid(),
-            "forge_root": str(FORGE_ROOT),
             "uptime": round(time.time() - BOOT_T, 1),
             "shizuku_tools": sorted(_android_tools & _SHIZUKU_ONLY)}
 

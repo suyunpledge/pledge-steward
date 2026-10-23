@@ -27,12 +27,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; aidl = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.11" }
 
     // rootfs tar 放 assets（>100MB 时改 APK 扩展文件或首启下载）
     sourceSets["main"].assets.srcDirs("src/main/assets")
     androidResources { noCompress += "tar" }   // tar 流式解包，不能压
+    packaging { jniLibs.useLegacyPackaging = true } // Native executables must be extracted.
 }
 
 dependencies {

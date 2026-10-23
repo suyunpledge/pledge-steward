@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.forge.android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Shizuku（ADB shell 身份工具桥） -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
@@ -17,10 +16,13 @@
          故保留但代码只允许 127.0.0.1 目标（OkHttp 拦截器强制）。 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application
         android:label="forge"
-        android:icon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.Material3.DayNight.NoActionBar"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:extractNativeLibs="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:allowBackup="false">
 
         <activity android:name=".MainActivity" android:exported="true"

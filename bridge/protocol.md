@@ -52,7 +52,7 @@ Kotlin 壳 ↔ forge_bridge（Python/FastAPI）唯一通道契约。JSON 文本�
 约定：
 - `execution.backend`: `auto`/`accessibility`/`shizuku`；`auto` = Kotlin 侧择优。
 - Python 侧 30s 超时；超时 `{ok:false,error:"device tool timeout"}` 仍回喂 Agent。
-- `ok:false` 结果对模型可见（可自行换策略/换通道重试）。
+- `ok:false` 结果对模型可见；输入结果未知时不得自动换通道重试，须重新观察并确认。
 - 坐标 = 真实屏幕像素，DPI 换算在 Kotlin 完成。
 
 ## 4. Shizuku 降级状态机（Kotlin 侧事实，上报给 Python）
@@ -68,9 +68,10 @@ Kotlin 壳 ↔ forge_bridge（Python/FastAPI）唯一通道契约。JSON 文本�
 
 ## 5. 安全边界
 
-- uvicorn 只听 127.0.0.1:8000（PRoot 内，App 私有命名空间）。
+- uvicorn 只听 127.0.0.1:8000；Android loopback 可被其他 App 访问。
+- 除 `/health` 外 HTTP 控制接口及 WS 必须带安装级 `Authorization: Bearer <token>`；不在 URL、图片、日志中传 token。
 - forge Policy 照常裁决：android.* 在 Python 侧是注册工具，mode×sandbox 全程生效。
-- 点击/输入类操作：Kotlin 弹悬浮窗确认气泡（可设置记住本会话）；inspect/capture 只读放行。
+- 点击/输入的 Kotlin 确认气泡尚未实现，当前宿主返回 `approval_unavailable/not_started`；Policy 允许也不能绕过。
 - 截图 base64 只在内存流转，不落盘（与桌面 computer_capture 同纪律）。
 - 审计：每次 android.* 执行记录 `{ts, tool, args 摘要, backend, ok}` 环形日志（UI 可查）。
 

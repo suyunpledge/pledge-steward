@@ -44,7 +44,7 @@ class ForgeToolService : IForgeTool.Stub() {
                 val bytes = shrink(tmp, maxSide.coerceIn(320, 1440))
                 Base64.encodeToString(bytes, Base64.NO_WRAP)
             } else null
-        }.finally {
+        }.also {
             tmp.delete()
         }.getOrNull()
     }
@@ -54,6 +54,7 @@ class ForgeToolService : IForgeTool.Stub() {
     override fun packageList(): String? = shell("pm list packages 2>/dev/null | head -c 32000", 10_000)
 
     override fun launchApp(pkg: String): Boolean {
+        require(Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+").matches(pkg))
         val r = shell("monkey -p $pkg -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && echo OK", 10_000)
         return r?.contains("OK") == true
     }

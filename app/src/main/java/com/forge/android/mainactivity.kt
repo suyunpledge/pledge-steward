@@ -9,7 +9,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import com.forge.android.bridge.Events
 import androidx.compose.ui.unit.dp
 import com.forge.android.bridge.AgentBridgeService
 import com.forge.android.shizuku.ShizukuGate
@@ -30,14 +34,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { ForgeTheme { App() } }
+        setContent { App() }
         AgentBridgeService.start(this)
         collectEvents()
     }
 
     private fun collectEvents() {
         // 事件流 → UI 状态（chat/bridge/shizuku）
-        Events.bind(this) { obj: JSONObject ->
+        lifecycleScope.launch { Events.events.collect { obj: JSONObject ->
             when (obj.optString("type")) {
                 "service_state" -> bridgeState.value = obj.optString("state")
                 "bridge_connected" -> bridgeState.value = "ready"
@@ -46,13 +50,19 @@ class MainActivity : ComponentActivity() {
                     val text = obj.optString("text", obj.optString("content", ""))
                     if (text.isNotBlank()) append(ChatItem("agent", text))
                 }
-                "run_done" -> append(ChatItem("summary",
+                "run_done" -> {
+                    val answer = obj.optString("answer")
+                    if (answer.isNotBlank()) append(ChatItem("agent", answer))
+                    append(ChatItem("summary",
                     "完成 · ${obj.optInt("steps")} 步 · ¥${obj.optDouble("cost")}"))
+                }
                 "run_failed" -> append(ChatItem("error", obj.optString("error")))
                 "shizuku_state" -> shizukuState.value = obj.optString("state")
                 "fatal" -> append(ChatItem("error", obj.optString("error")))
             }
         }
+    }
+
     }
 
     private fun append(item: ChatItem) {
@@ -129,11 +139,12 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun EmptyState() {
+        val bridge by bridgeState.collectAsState()
         Column(Modifier.fillMaxWidth().padding(32.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("forge · Android", style = MaterialTheme.typography.titleLarge)
             Text(
-                if (bridgeState.value == "ready") "桥已就绪，输入任务开始。"
+                if (bridge == "ready") "桥已就绪，输入任务开始。"
                 else "首次启动在解包 Linux 环境并拉起 Python Agent（约 1-2 分钟）…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -142,6 +153,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun InputBar(onSend: (String) -> Unit) {
+        val bridge by bridgeState.collectAsState()
         var text by remember { mutableStateOf("") }
         Surface(tonalElevation = 4.dp) {
             Row(Modifier.fillMaxWidth().padding(12.dp),
@@ -153,7 +165,7 @@ class MainActivity : ComponentActivity() {
                     placeholder = { Text("给 Agent 派任务…") },
                     maxLines = 4)
                 Button(onClick = { onSend(text); text = "" },
-                    enabled = text.isNotBlank() && bridgeState.value == "ready") {
+                    enabled = text.isNotBlank() && bridge == "ready") {
                     Text("发送")
                 }
             }

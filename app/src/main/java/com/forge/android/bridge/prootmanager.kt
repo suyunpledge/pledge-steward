@@ -21,10 +21,10 @@ class ProotManager(private val context: Context) {
     private val assetsTar = "forge-rootfs-arm64.tar"
 
     private fun prootBin(): String =
-        File(context.applicationInfo.nativeLibraryDir, "proot").absolutePath
+        File(context.applicationInfo.nativeLibraryDir, "libproot.so").absolutePath
 
     private fun busybox(): String =
-        File(context.applicationInfo.nativeLibraryDir, "busybox").absolutePath
+        File(context.applicationInfo.nativeLibraryDir, "libbusybox.so").absolutePath
 
     /** 首启解包（幂等）。tar 在 assets，流式解到 filesDir/rootfs。 */
     fun extractIfNeeded(onProgress: (Int) -> Unit = {}): Boolean {
@@ -89,14 +89,16 @@ class ProotManager(private val context: Context) {
             "TMPDIR=/tmp",
             "FORGE_ROOT=/opt/forge",
             *command.toTypedArray()
-        ).start()
+        ).apply {
+            environment()["FORGE_BRIDGE_TOKEN"] = BridgeToken.get(context)
+        }.start()
     }
 
     /** 拉起桥服务（uvicorn），由 PythonSupervisor watchdog 持有进程。 */
     fun startBridge(): Process = exec(listOf(
         "/usr/bin/python3", "-m", "uvicorn",
         "forge_bridge:app", "--host", "127.0.0.1", "--port", "8000",
-        "--app-dir", "/opt/forge", "--log-level", "info"))
+        "--app-dir", "/opt/forge", "--loop", "asyncio", "--log-level", "info"))
 
     fun stop() {
         // PRoot 无 mount 残留；进程由 Supervisor destroy

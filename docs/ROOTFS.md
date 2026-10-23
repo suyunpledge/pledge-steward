@@ -3,6 +3,23 @@
 目标：arm64 Ubuntu 24.04 用户态 tar，内含 python3 + uvicorn/fastapi + forge 全仓，
 直接可被 PRoot 挂载（root 设备可选真 chroot，同一套镜像）。
 
+## 自动构建（优先）
+
+在独立 Ubuntu WSL 中以 root 执行本工作树的 `forge-android/scripts/build-rootfs.sh`。
+使用 Linux 文件系统的 `/root/forge-arm64-build`，不要在 `/mnt/c` 解包 Linux rootfs。
+脚本执行 debootstrap foreign/second-stage、安装 Python/FastAPI/Uvicorn/WebSockets，
+复制完整的 Git 管理源码及本工作树修复（不含 `.git`、忽略的凭据和构建产物），
+验证 arm64 Python 导入后写入 `app/src/main/assets/forge-rootfs-arm64.tar`，附 SHA-256。
+
+首次构建目录必须为空；失败时保留目录及日志排查，不自动删除。Node/npm、Git/SSH
+不是本次最小镜像的必需依赖，未放入运行镜像；需要时另行安装。tar 体积由实际
+软件包和全仓源码决定，不能把下表估算当作验收结果。
+
+**APK 运行还需 Android arm64 原生 PRoot 和 busybox**，分别以
+`app/src/main/jniLibs/arm64-v8a/libproot.so`、`libbusybox.so` 打包，
+安装后从 `nativeLibraryDir` 执行。Ubuntu 的 aarch64 Linux 二进制不能替代
+Android 的这些宿主程序；仅有 rootfs tar 不代表免 root 启动链路已完成。
+
 ## 1) debootstrap
 
 ```bash

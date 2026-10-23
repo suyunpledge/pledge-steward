@@ -13,6 +13,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -30,26 +31,30 @@ import java.util.concurrent.TimeUnit
 class AgentBridgeService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private lateinit var chroot: ChrootManager
+    private lateinit var chroot: ProotManager
     private lateinit var supervisor: PythonSupervisor
 
     /** UI 订阅的事件总线（WS 收到的所有 JSON + 服务状态）。 */
-    private val _events = MutableSharedFlow<JSONObject>(
-        extraBufferCapacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val _events = Events.events
     val events: SharedFlow<JSONObject> get() = _events
     var serviceState: String = "idle"      // idle/extracting/booting/ready/restarting
         private set
 
     private var ws: WebSocket? = null
-    private val client = OkHttpClient.Builder()
+    private val client by lazy { OkHttpClient.Builder()
+        .addInterceptor { chain ->
+            val request = chain.request()
+            require(request.url.host == "127.0.0.1")
+            chain.proceed(request.newBuilder().header("Authorization", "Bearer " + BridgeToken.get(this)).build())
+        }
         .readTimeout(0, TimeUnit.MILLISECONDS)      // WS 长连接
         .connectTimeout(10, TimeUnit.SECONDS)
         .pingInterval(25, TimeUnit.SECONDS)
-        .build()
+        .build() }
 
     override fun onCreate() {
         super.onCreate()
-        chroot = ChrootManager(this)
+        chroot = ProotManager(this)
         supervisor = PythonSupervisor(this, chroot)
         startForeground(NOTIF_ID, buildNotification("forge bridge 启动中"))
         scope.launch { bootstrap() }
@@ -58,8 +63,9 @@ class AgentBridgeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.action.let { act ->
             when (act) {
-                ACTION_SEND -> intent.getStringExtra("payload")?.let { sendRaw(it) }
+                ACTION_SEND -> intent?.getStringExtra("payload")?.let { sendRaw(it) }
                 ACTION_STOP -> stopSelf()
+                else -> Unit
             }
         }
         return START_STICKY
@@ -211,7 +217,7 @@ class AgentBridgeService : Service() {
         const val ACTION_SEND = "com.forge.android.SEND"
         const val ACTION_STOP = "com.forge.android.STOP"
 
-        fun start(ctx: Context) = ctx.startService(Intent(ctx, AgentBridgeService::class.java))
+        fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, AgentBridgeService::class.java))
         fun send(ctx: Context, payload: String) =
             ctx.startService(Intent(ctx, AgentBridgeService::class.java)
                 .setAction(ACTION_SEND).putExtra("payload", payload))

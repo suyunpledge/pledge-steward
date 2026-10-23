@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class PythonSupervisor(
     private val context: Context,
-    private val chroot: ChrootManager,
+    private val chroot: ProotManager,
 ) {
     private val monitor = Executors.newSingleThreadExecutor()
     private val processRef = AtomicReference<Process?>(null)
@@ -30,6 +30,7 @@ class PythonSupervisor(
     val logsSnapshot: List<String> get() = synchronized(logBuffer) { logBuffer.toList() }
 
     fun start() {
+        if (shouldRun) return
         shouldRun = true
         monitor.execute { superviseLoop() }
     }
@@ -37,6 +38,7 @@ class PythonSupervisor(
     fun stop() {
         shouldRun = false
         processRef.getAndSet(null)?.destroy()
+        monitor.shutdownNow()
     }
 
     private fun superviseLoop() {
@@ -44,14 +46,9 @@ class PythonSupervisor(
         while (shouldRun) {
             val t0 = System.currentTimeMillis()
             try {
-                val proc = chroot.exec(listOf(
-                    "/usr/bin/python3", "-m", "uvicorn",
-                    "forge_bridge:app",
-                    "--host", "127.0.0.1", "--port", "8000",
-                    "--app-dir", "/opt/forge",
-                ))
+                val proc = chroot.startBridge()
                 processRef.set(proc)
-                appendLog("[supervisor] uvicorn started pid=${proc.pid()}")
+                appendLog("[supervisor] uvicorn started")
 
                 // 泵 stdout 到环形缓冲（uvicorn 日志在这里）
                 Thread { pump(proc.inputStream, "out") }.start()

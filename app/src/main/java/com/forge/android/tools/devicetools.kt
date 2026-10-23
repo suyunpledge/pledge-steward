@@ -109,7 +109,7 @@ class DeviceTools(
     }
 
     private suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, dur: Int): JSONObject {
-        val byA11y = ForgeAccessibility.swipe(x1, y1, x2, y2, dur)
+        val byA11y = ForgeAccessibility.swipe(x1, y1, x2, y2, dur.toLong())
         if (byA11y) return ok(JSONObject().put("performed", true).put("backend", "accessibility"))
         if (ForgeToolClient.isReady && ForgeToolClient.inputSwipe(x1, y1, x2, y2, dur)) {
             return ok(JSONObject().put("performed", true).put("backend", "shizuku"))
@@ -144,7 +144,7 @@ class DeviceTools(
         }
         val intent = context.packageManager.getLaunchIntentForPackage(pkg)
         if (intent != null) {
-            context.startActivity(intent.addFlags(FLAG_NEW_TASK))
+            context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
             return ok(JSONObject().put("started", true).put("backend", "intent"))
         }
         return fail("cannot launch $pkg")
@@ -196,8 +196,7 @@ class DeviceTools(
         return baos.toByteArray()
     }
 
-    private const val PackageManagerGET_INSTALLED = 0x0000
-    private const val FLAG_NEW_TASK = 0x10000000
+    private val PackageManagerGET_INSTALLED = 0x0000
 
     companion object { private const val TAG = "DeviceTools" }
 }
