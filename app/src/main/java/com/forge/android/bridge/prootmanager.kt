@@ -26,16 +26,30 @@ class ProotManager(private val context: Context) {
     private fun busybox(): String =
         File(context.applicationInfo.nativeLibraryDir, "libbusybox.so").absolutePath
 
-    /** 首启解包（幂等）。tar 在 assets，流式解到 filesDir/rootfs。 */
+    /**
+     * 首启解包（幂等 + 原子 + 版本校验）。tar 在 assets，流式解到 filesDir。
+     *
+     * 灰度版加固（审计遗留 #4）：
+     * - .forge-extracted 的内容 = assets tar 的 SHA-256（版本指纹），
+     *   镜像升级（指纹变化）自动重解；中断解包不留半成品。
+     * - 解到 rootfs.tmp.<pid>，成功后 deleteRecursively 旧 rootfs 并 rename。
+     * - 首次计算 tar 指纹读一遍 assets（~200MB 读一遍约 2-4s，可接受），
+     *   之后由标记文件承载，不重复算。
+     */
     fun extractIfNeeded(onProgress: (Int) -> Unit = {}): Boolean {
         val mark = File(rootfsDir, ".forge-extracted")
-        if (mark.exists()) return true
-        rootfsDir.mkdirs()
-        return try {
+        val digest = tarDigest()
+        if (digest != null && mark.exists() && mark.readText().trim() == digest) {
+            return true   // 同版本已解包
+        }
+        // 版本变化或未解包：全新解包到 tmp，成功后原子替换
+        val tmpDir = File(context.filesDir, "rootfs.tmp.${android.os.Process.myPid()}")
+        tmpDir.deleteRecursively()
+        tmpDir.mkdirs()
+        val ok = try {
             context.assets.open(assetsTar).use { input ->
-                // busybox tar 处理 assets 流（-O 读 stdin 用 -）
                 val proc = ProcessBuilder(
-                    busybox(), "tar", "-xf", "-", "-C", rootfsDir.absolutePath)
+                    busybox(), "tar", "-xf", "-", "-C", tmpDir.absolutePath)
                     .redirectErrorStream(true)
                     .start()
                 Thread {
@@ -53,16 +67,49 @@ class ProotManager(private val context: Context) {
                         proc.outputStream.close()
                     }
                 }.start()
-                val ok = proc.waitFor(300, TimeUnit.SECONDS) && proc.exitValue() == 0
-                if (ok) mark.writeText("ok")
-                else Log.e(TAG, proc.inputStream.bufferedReader().readText().take(1500))
-                onProgress(100)
-                ok
+                val done = proc.waitFor(600, TimeUnit.SECONDS) && proc.exitValue() == 0
+                if (!done) {
+                    proc.destroyForcibly()
+                    Log.e(TAG, "tar extract failed: " +
+                        proc.inputStream.bufferedReader().readText().take(1000))
+                }
+                done
             }
         } catch (e: Exception) {
             Log.e(TAG, "extract failed: ${e.message}")
             false
         }
+        return if (ok && digest != null) {
+            rootfsDir.deleteRecursively()
+            if (tmpDir.renameTo(rootfsDir)) {
+                File(rootfsDir, ".forge-extracted").writeText(digest)
+                onProgress(100)
+                true
+            } else {
+                Log.e(TAG, "atomic rename failed")
+                tmpDir.deleteRecursively()
+                false
+            }
+        } else {
+            tmpDir.deleteRecursively()   // 不留半成品
+            ok   // digest==null（assets 缺 tar）时保持原语义返回 ok
+        }
+    }
+
+    /** assets tar 的 SHA-256（hex）；读取失败返回 null。 */
+    private fun tarDigest(): String? = try {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        context.assets.open(assetsTar).use { input ->
+            val buf = ByteArray(1 shl 16)
+            var read: Int
+            while (input.read(buf).also { read = it } > 0) {
+                md.update(buf, 0, read)
+            }
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) {
+        Log.w(TAG, "tar digest failed: ${e.message}")
+        null
     }
 
     /**

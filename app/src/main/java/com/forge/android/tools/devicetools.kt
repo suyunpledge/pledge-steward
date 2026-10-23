@@ -42,9 +42,11 @@ class DeviceTools(
             val result = runCatching { dispatch(tool, args) }
                 .fold({ it }, { e -> fail("dispatch error: ${e.message}") })
             audit(tool, args, result)
+            val errMsg = if (result.has("error") && !result.isNull("error"))
+                result.optString("error") else null
             service.postToolResult(
                 callId, result.optBoolean("ok"), result.optJSONObject("result"),
-                result.optString("error", null))
+                errMsg)
         }
     }
 

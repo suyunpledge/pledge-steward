@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okio.ByteString
+import com.forge.android.shizuku.ShizukuGate
+import com.forge.android.tools.DeviceTools
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -33,6 +36,8 @@ class AgentBridgeService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var chroot: ProotManager
     private lateinit var supervisor: PythonSupervisor
+    private lateinit var shizukuGate: ShizukuGate
+    lateinit var deviceTools: DeviceTools
 
     /** UI 订阅的事件总线（WS 收到的所有 JSON + 服务状态）。 */
     private val _events = Events.events
@@ -56,8 +61,33 @@ class AgentBridgeService : Service() {
         super.onCreate()
         chroot = ProotManager(this)
         supervisor = PythonSupervisor(this, chroot)
+        // 灰度版接线（审计遗留 #2）：设备工具 + Shizuku 状态机
+        shizukuGate = ShizukuGate { state ->
+            emit(JSONObject().put("type", "shizuku_state").put("state", state))
+            reportCapabilities()
+        }
+        deviceTools = DeviceTools(this, this, shizukuGate)
+        shizukuGate.start()
         startForeground(NOTIF_ID, buildNotification("forge bridge 启动中"))
         scope.launch { bootstrap() }
+    }
+
+    private fun reportCapabilities() {
+        scope.launch {
+            val body = JSONObject().apply {
+                put("tools", JSONArray(deviceTools.registry()))
+                put("shizuku", shizukuGate.state.value)
+            }
+            runCatching {
+                client.newCall(Request.Builder()
+                    .url("http://127.0.0.1:8000/capabilities")
+                    .post(RequestBody.create(
+                        "application/json".toMediaTypeOrNull(), body.toString()))
+                    .build()).execute().use {
+                        Log.d(TAG, "capabilities reported: ${it.code} (${shizukuGate.state.value})")
+                    }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -108,10 +138,21 @@ class AgentBridgeService : Service() {
         ws = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 emit(JSONObject().put("type", "bridge_connected"))
+                reportCapabilities()   // 每次连接同步真实工具面
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                runCatching { JSONObject(text) }.getOrNull()?.let { _events.tryEmit(it) }
+                runCatching { JSONObject(text) }.getOrNull()?.let { obj ->
+                    // 灰度版接线：桥的设备工具请求 → Kotlin 双通道执行 →
+                    // postToolResult 回传（type=tool_call 的消费点）
+                    if (obj.optString("type") == "tool_call") {
+                        deviceTools.handle(
+                            obj.optString("call_id"),
+                            obj.optString("tool"),
+                            obj.optJSONObject("arguments") ?: JSONObject())
+                    }
+                    _events.tryEmit(obj)
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
