@@ -1,82 +1,59 @@
-# forge-android 桥协议 v0.2（PROTOCOL.md）
+# Android Bridge v0.2 实际契约（2026-10-24）
 
-Kotlin 壳 ↔ forge_bridge（Python/FastAPI）唯一通道契约。JSON 文本帧；`t` 为 Unix 秒。
+仅监听 127.0.0.1:8000。除 GET /health 外，HTTP 与 WS 都需要安装级 `Authorization: Bearer <token>`。
+loopback 不是 App 私有网络；token 不能放入 URL。
 
-## 1. WebSocket `/agent/ws?session=<id>`（App 主通道）
+## WS /agent/ws?session=<id>
 
-### App → Python
+session 为 1～64 位字母、数字、下划线或连字符。同会话只允许一个连接和一个活跃任务。
+断开时设置协作取消；工作线程实际退出前继续占用会话，拒绝重入，不自动重放。
 
-| type | 字段 | 说明 |
+| 方向 | type | 字段 / 行为 |
 |---|---|---|
-| `run` | `task: str`, `history?: list` | 一轮任务 |
-| `ping` | — | 保活 |
-| `reset` | — | 丢弃会话 Agent |
+| App→桥 | run | task 非空且≤32000字符，history 可选列表；忙时 error |
+| App→桥 | cancel | 设置取消 token，发 cancel_tools 和 cancel_requested；不保证当前模型请求立即返回 |
+| App→桥 | ping | 随时返回 pong |
+| App→桥 | reset | 空闲时重建 Agent，保留磁盘会话文件；忙时拒绝 |
+| App→桥 | refresh_tools | 返回当前宿主能力快照 |
+| 桥→App | ready | session、tools；实际 Agent 构造成功后发送 |
+| 桥→App | run_started | RunRequest 的 run_id/task_id/parent_run_id 等公开字段 |
+| 桥→App | agent.<type> | 现有核心 observer 事件，不另行解析工具协议 |
+| 桥→App | tool_call | call_id、tool、arguments；设备工具宿主请求 |
+| 桥→App | cancel_tool | call_id；调用超时，撤销待处理操作 |
+| 桥→App | cancel_tools | 撤销当前连接的待处理设备操作 |
+| 桥→App | run_done | 同一 RunRequest 字段、execution_state、answer、steps、cost |
+| 桥→App | run_failed | 同一 RunRequest 字段、execution_state=failed、error |
+| 桥→App | error / fatal | 协议拒绝 / Agent 构造失败等错误 |
 
-### Python → App
+run_done 表示执行返回，不代表任务成功：execution_state 可为 cancelled、unknown_outcome 或核心其他停止原因。
 
-| type | 字段 | 说明 |
-|---|---|---|
-| `ready` | `session`, `uptime` | 建连接即发 |
-| `agent.<evt>` | forge observer 事件 | step / tool_decision / tool_call / assistant_message / compaction / subagent_spawn … |
-| `tool_call` | `call_id`, `tool`, `arguments`, `execution?` | **设备工具请求**（android.*）；Kotlin 执行后 POST /tool/call 回传 |
-| `capabilities` | `tools: [str]` | 工具能力上报（Shizuku 上/下线时 Kotlin 主动请求刷新） |
-| `run_done` | `answer`, `steps`, `cost` | 一轮结束 |
-| `run_failed` | `error` | 一轮异常（进程不崩） |
-| `pong` / `error` / `reset_ok` | — | 控制面 |
+## HTTP
 
-## 2. HTTP
+| 路径 | 请求 / 行为 |
+|---|---|
+| GET /health | 未认证可用，仅健康信息 |
+| POST /capabilities | tools:[str]、approval:bool（默认false）、shizuku:str；只保留已知工具，approval=false 移除写工具 |
+| POST /tool/call | call_id、ok、result?、error?、execution_state?:completed/not_started/unknown；只结算未过期 waiter 一次，迟到/重复 404 |
+| POST /agent/run | task/history；SSE 调试入口，会话 sse 互斥（忙时409），断连协作取消 |
+| POST /remote/* | 501，尚未实现 |
 
-| 方法 | 路径 | 请求 | 响应 |
-|---|---|---|---|
-| GET | `/health` | — | `{status, pid, uptime}` |
-| POST | `/agent/run` | `{task, history?}` | SSE（调试用） |
-| POST | `/tool/call` | `{call_id, ok, result?, error?}` | `{accepted}` / 404 |
-| POST | `/capabilities` | `{tools: [str]}` | 刷新可注册工具面（Shizuku 状态变化时） |
-| POST | `/remote/*` | — | 501 预留 |
+Kotlin 每 3 秒核对实际能力，只在变化或重连时上报；Shizuku online 和 UserService 已绑定分别判断。
+Python 每轮执行前按最新快照注册 ToolSpec，核心 Policy 先裁决，宿主执行时再次检查当前能力。
+能力变化不会重建正在运行的 Agent，也不会扩大其权限。
 
-## 3. 工具命名空间与通道
+## 设备工具与输入安全
 
-| 工具 | 参数 | 通道选择 | result |
-|---|---|---|---|
-| `android.screen.inspect` | `{}` | Accessibility dump；Shizuku `uiautomator dump` 备选 | `{xml}`（≤64KB 截断） |
-| `android.screen.capture` | `{max_side?}` | Shizuku `screencap`；无障碍 takeScreenshot 备选 | `{width,height,base64_png}`（≤1MP） |
-| `android.ui.click` | `{x,y}` | Accessibility 手势；Shizuku `input tap` 兜底 | `{performed:true}` |
-| `android.ui.swipe` | `{x1,y1,x2,y2,duration_ms?}` | 同上（`input swipe`） | `{performed:true}` |
-| `android.ui.input` | `{text}` | Accessibility SET_TEXT；Shizuku `input text`/广播输入法 | `{set:true}` |
-| `android.app.list` | `{}` | Shizuku `pm list packages`；离线 packageManager | `{packages:[…]}`（截断 200） |
-| `android.app.launch` | `{package}` | Shizuku `monkey -p`/`am start`；离线 launchIntent | `{started:true}` |
-| `android.device.info` | `{}` | 系统 API | `{model,sdk,screen,dpi,…}` |
-| `linux.shell.execute` | `{cmd, timeout_ms?}` | PRoot 内执行 | `{code, stdout, stderr}`（各 ≤32KB） |
-| `linux.file.read/write` | 路径 | PRoot 文件系统 | 内容/ `{written:n}` |
+schema 由 bridge_tools.py 定义，宿主再次验证坐标、时长、文本长度和包名。
+click/swipe/input 仅在无障碍与确认权限均就绪时暴露；launch 需确认权限。
+弹窗显示完整操作参数，用户只能批准当次，20秒过期；取消/断线撤销。
+UI 输入要求外部无障碍目标，拒绝 Forge 自身；批准前后 UI 树不一致则拒绝，需要重新观察。
 
-约定：
-- `execution.backend`: `auto`/`accessibility`/`shizuku`；`auto` = Kotlin 侧择优。
-- Python 侧 30s 超时；超时 `{ok:false,error:"device tool timeout"}` 仍回喂 Agent。
-- `ok:false` 结果对模型可见；输入结果未知时不得自动换通道重试，须重新观察并确认。
-- 坐标 = 真实屏幕像素，DPI 换算在 Kotlin 完成。
+每次输入只调用一个后端，失败不自动换通道。completed 仅表示收到后端回执，不代表业务目标完成。
+Python 等待设备结果30秒，超时发 cancel_tool，写操作记 unknown；适配器等待上限35秒。
+未知结果须重新观察并由用户重新确认，不能声称 exactly-once。
 
-## 4. Shizuku 降级状态机（Kotlin 侧事实，上报给 Python）
-
-| 状态 | 触发 | 工具面变化 |
-|---|---|---|
-| `shizuku.online` | binder 连通 + 权限授予 | 全量 android.*（含 shell 系） |
-| `shizuku.offline` | 重启后未启动/断开 | 移除 shell 依赖项；click/input 仍可用（无障碍）；capture 降级或禁用 |
-| `shizuku.denied` | 用户拒绝授权 | 同 offline，UI 提示入口 |
-| 恢复 | binder 重连 | Kotlin POST /capabilities 刷新，Agent 下轮可见 |
-
-**铁律：Shizuku 离线 ≠ App 不可用。** 对话与 linux.* 永远可用。
-
-## 5. 安全边界
-
-- uvicorn 只听 127.0.0.1:8000；Android loopback 可被其他 App 访问。
-- 除 `/health` 外 HTTP 控制接口及 WS 必须带安装级 `Authorization: Bearer <token>`；不在 URL、图片、日志中传 token。
-- forge Policy 照常裁决：android.* 在 Python 侧是注册工具，mode×sandbox 全程生效。
-- 点击/输入的 Kotlin 确认气泡尚未实现，当前宿主返回 `approval_unavailable/not_started`；Policy 允许也不能绕过。
-- 截图 base64 只在内存流转，不落盘（与桌面 computer_capture 同纪律）。
-- 审计：每次 android.* 执行记录 `{ts, tool, args 摘要, backend, ok}` 环形日志（UI 可查）。
-
-## 6. 远程控制电脑 forge（v0.2+ 预留）
-
-- `POST /remote/session`：token 协商建立反向会话。
-- `POST /remote/event`：桌面 computer_use 事件流（observe/act/click 审批）转发。
-- Kotlin 侧 `RemoteControl.kt` 维护反向 WS；断线重连语义与 §4 同法。
+screen.inspect 返回 xml；capture 返回 base64_png/source，max_side限制320～1440。
+坐标为真实屏幕像素；缩小的截图不能直接作为点击坐标，应结合 device.info 的原始屏幕尺寸换算。
+应用列表最多200条且受平台可见性限制。当前未开放任意 Android shell。
+截图主要在内存传输；Shizuku screencap 临时文件在 finally 删除，进程异常终止仍可能留下缓存文件。
+内部环形审计并非持久审计系统，尚无图形日志导出页。

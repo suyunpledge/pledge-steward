@@ -37,7 +37,7 @@ class PythonSupervisor(
 
     fun stop() {
         shouldRun = false
-        processRef.getAndSet(null)?.destroy()
+        processRef.getAndSet(null)?.destroyForcibly()
         monitor.shutdownNow()
     }
 
@@ -48,6 +48,7 @@ class PythonSupervisor(
             try {
                 val proc = chroot.startBridge()
                 processRef.set(proc)
+                if(!shouldRun) {proc.destroyForcibly();processRef.compareAndSet(proc,null);break}
                 appendLog("[supervisor] uvicorn started")
 
                 // 泵 stdout 到环形缓冲（uvicorn 日志在这里）
@@ -56,6 +57,7 @@ class PythonSupervisor(
 
                 val exited = proc.waitFor()
                 processRef.set(null)
+                if(System.currentTimeMillis()-t0>30000) backoffMs=1000L
                 appendLog("[supervisor] uvicorn exited code=$exited after ${(System.currentTimeMillis()-t0)/1000}s")
             } catch (e: Exception) {
                 appendLog("[supervisor] spawn failed: ${e.message}")

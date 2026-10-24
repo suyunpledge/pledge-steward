@@ -16,23 +16,31 @@ object ForgeToolClient {
 
     @Volatile private var tool: IForgeTool? = null
     private val executor = Executors.newSingleThreadExecutor()
-    private var bindAttempts = 0
+    @Volatile private var binding = false
+    private var changed: () -> Unit = {}
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             tool = IForgeTool.Stub.asInterface(service)
-            bindAttempts = 0
+            binding = false
+            changed()
             Log.i(TAG, "userService connected")
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             tool = null
+            binding = false
+            changed()
             Log.w(TAG, "userService disconnected")
         }
+        override fun onBindingDied(name: ComponentName?) = onServiceDisconnected(name)
+        override fun onNullBinding(name: ComponentName?) = onServiceDisconnected(name)
     }
 
-    fun bind(context: Context) {
-        if (tool != null) return
+    @Synchronized fun bind(context: Context, onChanged: () -> Unit = {}) {
+        changed = onChanged
+        if (tool != null || binding) return
+        binding = true
         val args = Shizuku.UserServiceArgs(
             ComponentName(context, ForgeToolService::class.java))
             .daemon(false)
@@ -40,7 +48,7 @@ object ForgeToolClient {
             .debuggable(false)
             .version(1)
         runCatching { Shizuku.bindUserService(args, connection) }
-            .onFailure { Log.w(TAG, "bind failed: ${it.message}") }
+            .onFailure { binding = false; Log.w(TAG, "bind failed: ${it.message}") }
     }
 
     fun unbind(context: Context) {
@@ -49,6 +57,8 @@ object ForgeToolClient {
             .daemon(false).processNameSuffix("forge_tools").version(1)
         runCatching { Shizuku.unbindUserService(args, connection, true) }
         tool = null
+        binding = false
+        changed = {}
     }
 
     val isReady: Boolean get() = tool != null

@@ -1,0 +1,137 @@
+{
+  "packages": {
+    "proot": {
+      "Version": "5.1.107.100",
+      "Filename": "pool/main/p/proot/proot_5.1.107.100_aarch64.deb",
+      "SHA256": "06082d4425523a9a618ed2a096c344518c33bc05029395a4ad44ea526d1612b6"
+    },
+    "busybox": {
+      "Version": "1.38.0-1",
+      "Filename": "pool/main/b/busybox/busybox_1.38.0-1_aarch64.deb",
+      "SHA256": "1bb7f1d4c00cadd0e1117b6dd7110311b8bf749ef00b486e96cfdc11c98f8fd9"
+    },
+    "libtalloc": {
+      "Version": "2.5.0",
+      "Filename": "pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
+      "SHA256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7"
+    },
+    "libandroid-shmem": {
+      "Version": "0.7",
+      "Filename": "pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+      "SHA256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6"
+    },
+    "libandroid-selinux": {
+      "Version": "14.0.0.11-1",
+      "Filename": "pool/main/liba/libandroid-selinux/libandroid-selinux_14.0.0.11-1_aarch64.deb",
+      "SHA256": "00afd8c34087c2864737b51fd9d104dc5e955f6ec3c0f50c0c7ef5b4a56866b9"
+    },
+    "pcre2": {
+      "Version": "10.49",
+      "Filename": "pool/main/p/pcre2/pcre2_10.49_aarch64.deb",
+      "SHA256": "c27995e5f52b8ecc9b8b3e662eb08e49f82a18bfd3f34343936acc7b23964724"
+    }
+  },
+  "binaries": {
+    "libproot.so": {
+      "package": "proot",
+      "member": "./data/data/com.termux/files/usr/bin/proot",
+      "original_sha256": "0b9b0448247631889a20430f5fd643975208ca06216eec7fa3204b5af2d5b91b",
+      "sha256": "ea2c0c66f9fff9890625418ae5cb0d5da77063e4305d2c11e0265e1accc4bdd2",
+      "needed": [
+        "libtalloc.so",
+        "libandroid-shmem.so",
+        "libc.so"
+      ],
+      "soname": null,
+      "entry": 88148
+    },
+    "libproot-loader.so": {
+      "package": "proot",
+      "member": "./data/data/com.termux/files/usr/libexec/proot/loader",
+      "original_sha256": "1da54355333cca3fb6ee10e3b82a24df24fb230c99241ce83809bf9e240609b5",
+      "sha256": "1da54355333cca3fb6ee10e3b82a24df24fb230c99241ce83809bf9e240609b5",
+      "needed": [],
+      "soname": null,
+      "entry": 360777252864
+    },
+    "libbusybox-impl.so": {
+      "package": "busybox",
+      "member": "./data/data/com.termux/files/usr/lib/libbusybox.so.1.38.0",
+      "original_sha256": "b8153ac191754afcd6dd1896f961c7ecf3965cafd727a2690f648fdd9ba57cc1",
+      "sha256": "f3bd707b0e99e51a906f5be240d839f934dd05ff3fe16a0a4e37ac220b6b23f2",
+      "needed": [
+        "libandroid-selinux.so",
+        "libm.so",
+        "libc.so"
+      ],
+      "soname": "libbusybox-impl.so",
+      "entry": 0
+    },
+    "libtalloc.so": {
+      "package": "libtalloc",
+      "member": "./data/data/com.termux/files/usr/lib/libtalloc.so.2.5.0",
+      "original_sha256": "742b438c4d09e276985a61d44164c9de207b6d8cc268f3018cb3001961bcb309",
+      "sha256": "160d39bc0d7ed946f22310d1d6f20addda21b02b0972dffe929fe49951543941",
+      "needed": [
+        "libc.so"
+      ],
+      "soname": "libtalloc.so",
+      "entry": 0
+    },
+    "libandroid-shmem.so": {
+      "package": "libandroid-shmem",
+      "member": "./data/data/com.termux/files/usr/lib/libandroid-shmem.so",
+      "original_sha256": "84475798e07c8174dbbfaec70a827fdb02f19ffa69a589380c13e7507fd0e731",
+      "sha256": "84475798e07c8174dbbfaec70a827fdb02f19ffa69a589380c13e7507fd0e731",
+      "needed": [
+        "liblog.so",
+        "libc.so"
+      ],
+      "soname": null,
+      "entry": 0
+    },
+    "libandroid-selinux.so": {
+      "package": "libandroid-selinux",
+      "member": "./data/data/com.termux/files/usr/lib/libandroid-selinux.so",
+      "original_sha256": "d769bc3757df751e4c302cdb55062a33cda2041ba0483d953d93100cd321a810",
+      "sha256": "d769bc3757df751e4c302cdb55062a33cda2041ba0483d953d93100cd321a810",
+      "needed": [
+        "libpcre2-8.so",
+        "liblog.so",
+        "libc.so"
+      ],
+      "soname": null,
+      "entry": 0
+    },
+    "libpcre2-8.so": {
+      "package": "pcre2",
+      "member": "./data/data/com.termux/files/usr/lib/libpcre2-8.so",
+      "original_sha256": "52c7ab426f4f274f630d05ef04c852153f4bb7e78ae178ce61cb17e258569bdf",
+      "sha256": "52c7ab426f4f274f630d05ef04c852153f4bb7e78ae178ce61cb17e258569bdf",
+      "needed": [
+        "libc.so"
+      ],
+      "soname": "libpcre2-8.so",
+      "entry": 0
+    },
+    "libbusybox.so": {
+      "source": "app/src/main/cpp/busybox-launcher.c",
+      "source_sha256": "c0398926798010424a6b8bfea0d283f545f742aef6d60443ac44f9f418bece0a",
+      "ndk": "Pkg.Desc = Android NDK\nPkg.Revision = 26.1.10909125",
+      "stripped": true,
+      "sha256": "68e74cb198e309c58392580c69bc37fa5b6f22250780f7b4749480c88e95b884",
+      "needed": [
+        "libdl.so",
+        "libc.so"
+      ],
+      "soname": null,
+      "entry": 18376
+    }
+  },
+  "aliases": {
+    "libtalloc.so.2": "libtalloc.so",
+    "libpcre2-8.so.0": "libpcre2-8.so",
+    "libbusybox.so.1.38.0": "libbusybox-impl.so"
+  },
+  "verification": "HTTPS index + package SHA256; ELF AArch64 + packaged DT_NEEDED closure"
+}

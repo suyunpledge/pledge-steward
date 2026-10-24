@@ -37,6 +37,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     // Compose（BOM 统一版本）
     val composeBom = platform("androidx.compose:compose-bom:2024.05.00")
     implementation(composeBom)

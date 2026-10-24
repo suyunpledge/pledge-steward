@@ -19,6 +19,8 @@ import subprocess
 import time
 import secrets
 import re
+import threading
+from typing import Literal
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,7 @@ sys.path.insert(0, str(FORGE_ROOT))
 
 from forge.config import load_config             # noqa: E402
 from forge.loop import Agent, LoopLimits, build_agent  # noqa: E402
+from forge.execution import RunRequest
 from forge.model import ModelRouter              # noqa: E402
 
 HOME = Path(os.environ.get("FORGE_HOME", "/opt/forge/.forge-home"))
@@ -59,6 +62,9 @@ async def authenticate(request, call_next):
 
 _sessions: dict[str, Agent] = {}
 _agent_lock = asyncio.Lock()
+_connected_sessions=set()
+_sessions_busy=set()
+_device_approval=False
 
 
 # android.* 工具面：Kotlin 经 /capabilities 上报（Shizuku 状态决定子集）
@@ -69,16 +75,16 @@ _SHIZUKU_ONLY = {"android.screen.capture", "android.app.list", "android.app.laun
 
 class CapabilitiesPayload(BaseModel):
     tools: list[str]
+    approval: bool = False
     shizuku: str = "offline"     # online/offline/denied
 
 
 @app.post("/capabilities")
 async def set_capabilities(payload: CapabilitiesPayload):
-    global _android_tools
-    base = {"android.screen.inspect", "android.ui.click", "android.ui.swipe",
-            "android.ui.input", "android.device.info"}
-    extra = set(payload.tools) & _SHIZUKU_ONLY if payload.shizuku == "online" else set()
-    _android_tools = (set(payload.tools) & base) | extra
+    global _android_tools, _device_approval
+    from bridge_tools import READ_TOOLS, WRITE_TOOLS
+    _device_approval = payload.approval
+    _android_tools = set(payload.tools) & (READ_TOOLS | (WRITE_TOOLS if payload.approval else set()))
     return {"registered": sorted(_android_tools), "shizuku": payload.shizuku}
 
 
@@ -111,6 +117,7 @@ class ToolResultPayload(BaseModel):
     ok: bool
     result: dict[str, Any] | None = None
     error: str | None = None
+    execution_state: Literal["completed","not_started","unknown"] | None = None
 
 
 @app.post("/tool/call")
@@ -119,7 +126,7 @@ async def tool_result(payload: ToolResultPayload):
     if fut is None or fut.done():
         raise HTTPException(404, "unknown or expired call_id")
     fut.set_result({"ok": payload.ok, "result": payload.result or {},
-                    "error": payload.error})
+                    "error": payload.error, "execution_state":payload.execution_state})
     return {"accepted": True}
 
 
@@ -133,7 +140,9 @@ async def _dispatch_android_tool(tool: str, arguments: dict[str, Any], emit) -> 
                     "arguments": arguments})
         return await asyncio.wait_for(fut, timeout=30.0)
     except asyncio.TimeoutError:
-        return {"ok": False, "error": "device tool timeout (30s)"}
+        await emit({"type":"cancel_tool","call_id":call_id})
+        return {"ok": False, "error": "device tool timeout (30s)",
+                "execution_state":"unknown" if tool in {"android.ui.click","android.ui.swipe","android.ui.input","android.app.launch"} else "not_started"}
     finally:
         _tool_waiters.pop(call_id, None)
 
@@ -141,70 +150,77 @@ async def _dispatch_android_tool(tool: str, arguments: dict[str, Any], emit) -> 
 # ── WS 主通道 ───────────────────────────────────────────────────
 @app.websocket("/agent/ws")
 async def agent_ws(ws: WebSocket):
-    if not authorized(ws.headers.get('authorization')):
-        await ws.close(code=1008)
-        return
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', ws.query_params.get('session','default')):
-        await ws.close(code=1008)
-        return
-    await ws.accept()
-    session_id = ws.query_params.get("session", "default")
-    # 关键：本 handler 的 loop 显式传出——observer 在 worker 线程里
-    # run_coroutine_threadsafe 必须用这个 loop，get_event_loop() 在
-    # 线程池线程拿不到它（TestClient portal / uvicorn 均如此）。
-    ws_loop = asyncio.get_running_loop()
-
-    async def emit(event: dict[str, Any]):
-        await ws.send_text(json.dumps(event, ensure_ascii=False))
-
-    agent = _sessions.get(session_id)
-    if agent is None:
-        async with _agent_lock:
-            agent = _sessions.get(session_id)
-            if agent is None:
-                agent = _build_session_agent(session_id)
-                _sessions[session_id] = agent
-
-    await emit({"type": "ready", "session": session_id,
-                "uptime": time.time() - BOOT_T,
-                "tools": sorted(_android_tools)})
+    session_id=ws.query_params.get("session","default")
+    if not authorized(ws.headers.get("authorization")) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',session_id):
+        await ws.close(code=1008);return
+    if session_id in _connected_sessions or session_id in _sessions_busy:
+        await ws.close(code=1008);return
+    _connected_sessions.add(session_id)
+    opened=True;active=None;cancel=None
+    async def emit(event):
+        if opened:
+            try:await ws.send_text(json.dumps(event,ensure_ascii=False))
+            except (RuntimeError,WebSocketDisconnect):
+                if cancel:cancel.set()
     try:
+        await ws.accept()
+        agent=_sessions.get(session_id)
+        if agent is None:
+            agent=_build_session_agent(session_id);_sessions[session_id]=agent
+        await emit({"type":"ready","session":session_id,"tools":sorted(_android_tools)})
+        async def drive(task,history,token):
+            try:await _run_agent(agent,task,history,emit,cancellation=token)
+            finally:_sessions_busy.discard(session_id)
         while True:
-            raw = await ws.receive_text()
-            msg = json.loads(raw)
-            kind = msg.get("type")
-            if kind == "run":
-                task = str(msg.get("task", "")).strip()
-                if not task:
-                    await emit({"type": "error", "error": "empty task"})
-                    continue
-                await _run_agent(agent, task, msg.get("history") or [], emit, ws_loop)
-            elif kind == "ping":
-                await emit({"type": "pong", "t": time.time()})
-            elif kind == "reset":
-                _sessions.pop(session_id, None)
-                agent = _build_session_agent(session_id)
-                _sessions[session_id] = agent
-                await emit({"type": "reset_ok"})
-            elif kind == "refresh_tools":
-                # Shizuku 状态变化：重建 Agent（expose 面更新）
-                # Tool adapters are refreshed at the start of the next run.
-                await emit({"type": "capabilities", "tools": sorted(_android_tools)})
-            else:
-                await emit({"type": "error", "error": f"unknown type {kind!r}"})
-    except WebSocketDisconnect:
-        return
+            try:
+                msg=json.loads(await ws.receive_text())
+                if not isinstance(msg,dict):raise ValueError()
+            except (ValueError,TypeError):
+                await emit({"type":"error","error":"invalid message"});continue
+            kind=msg.get("type")
+            if kind=='run':
+                task=msg.get('task','');history=msg.get('history') or []
+                if not isinstance(task,str) or not task.strip() or len(task)>32000 or not isinstance(history,list):
+                    await emit({"type":"error","error":"invalid task/history"});continue
+                if session_id in _sessions_busy:
+                    await emit({"type":"error","error":"session busy"});continue
+                cancel=threading.Event();_sessions_busy.add(session_id)
+                active=asyncio.create_task(drive(task,history,cancel))
+            elif kind=='cancel':
+                if cancel:cancel.set()
+                await emit({"type":"cancel_tools"})
+                await emit({"type":"cancel_requested"})
+            elif kind=='ping':await emit({"type":"pong","t":time.time()})
+            elif kind=='reset':
+                if session_id in _sessions_busy:
+                    await emit({"type":"error","error":"cancel and wait before resetting"});continue
+                agent=_build_session_agent(session_id);_sessions[session_id]=agent
+                await emit({"type":"reset_ok"})
+            elif kind=='refresh_tools':await emit({"type":"capabilities","tools":sorted(_android_tools)})
+            else:await emit({"type":"error","error":"unknown type"})
+    except WebSocketDisconnect:pass
+    except Exception as exc:
+        await emit({'type':'fatal','error':str(exc)})
+    finally:
+        opened=False
+        if cancel:cancel.set()
+        _connected_sessions.discard(session_id)
 
 
-async def _run_agent(agent: Agent, task: str, history: list, emit, ws_loop=None) -> None:
-    """Run the real Agent registry in a worker; send device reads on the WS loop.
 
-    Device writes remain denied until the Kotlin approval UI is implemented.
-    """
+async def _run_agent(agent: Agent, task: str, history: list, emit, ws_loop=None, *, cancellation=None) -> None:
+    """Run the real registry in a worker; device inputs need host approval."""
     from bridge_tools import register_android_tools  # 同目录：工具注册适配层
 
     loop = ws_loop or asyncio.get_running_loop()
     done = loop.create_future()
+    request=RunRequest(entry='android')
+    agent.cancellation_event=cancellation or threading.Event()
+    await emit({'type':'run_started',**request.as_dict()})
+    def settle(value=None,error=None):
+        if not done.done():
+            if error:done.set_exception(error)
+            else:done.set_result(value)
 
     def observer(event: dict[str, Any]) -> None:
         data = dict(event)
@@ -215,25 +231,27 @@ async def _run_agent(agent: Agent, task: str, history: list, emit, ws_loop=None)
     def _worker():
         try:
             if hasattr(agent, "registry"):
-                register_android_tools(agent.registry,_android_tools,_dispatch_android_tool,emit,loop)
+                register_android_tools(agent.registry,_android_tools,_dispatch_android_tool,emit,loop,approval_available=_device_approval)
                 agent._observer = observer
             with agent.session:
-                report = agent.run(task, history=history)
+                report = agent.run(task, history=history,run_request=request)
             summary = {
+                **request.as_dict(),
+                "execution_state":getattr(report,"stopped","final"),
                 "answer": getattr(report, "text", getattr(report, "answer", "")) or "",
                 "steps": len(report.steps) if isinstance(report.steps,list) else report.steps,
                 "cost": float(getattr(report, "usage", {}).get("cost", 0.0) or 0.0),
             }
-            loop.call_soon_threadsafe(done.set_result, summary)
+            loop.call_soon_threadsafe(settle, summary)
         except Exception as exc:            # noqa: BLE001
-            loop.call_soon_threadsafe(done.set_exception, exc)
+            loop.call_soon_threadsafe(settle, None, exc)
 
     loop.run_in_executor(None, _worker)
     try:
         summary = await done
         await emit({"type": "run_done", **summary})
     except Exception as exc:                # noqa: BLE001
-        await emit({"type": "run_failed", "error": str(exc)})
+        await emit({"type": "run_failed", **request.as_dict(), "execution_state":"failed", "error": str(exc)})
 
 
 # ── SSE（调试）/ 健康 / 远程预留 ─────────────────────────────────
@@ -244,6 +262,12 @@ class RunBody(BaseModel):
 
 @app.post("/agent/run")
 async def agent_run(body: RunBody):
+    if not body.task.strip() or len(body.task)>32000:
+        raise HTTPException(422,"invalid task")
+    if 'sse' in _sessions_busy or 'sse' in _connected_sessions:
+        raise HTTPException(409,"session busy")
+    _sessions_busy.add('sse')
+    cancellation=threading.Event()
     async def gen():
         q: asyncio.Queue = asyncio.Queue()
 
@@ -251,20 +275,25 @@ async def agent_run(body: RunBody):
             await q.put(ev)
 
         async def drive():
-            agent = _sessions.get("sse")
-            if agent is None:
-                agent = _build_session_agent("sse")
-                _sessions["sse"] = agent
-            await _run_agent(agent, body.task, body.history or [], emit)
-            await q.put(None)
+            try:
+                agent = _sessions.get("sse")
+                if agent is None:
+                    agent = _build_session_agent("sse")
+                    _sessions["sse"] = agent
+                await _run_agent(agent, body.task, body.history or [], emit,cancellation=cancellation)
+            finally:
+                _sessions_busy.discard('sse')
+                await q.put(None)
 
         asyncio.create_task(drive())
-        while True:
-            ev = await q.get()
-            if ev is None:
-                yield "event: done\ndata: {}\n\n"
-                return
-            yield f"event: {ev.get('type', 'step')}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        try:
+            while True:
+                ev = await q.get()
+                if ev is None:
+                    yield "event: done\ndata: {}\n\n"
+                    return
+                yield f"event: {ev.get('type', 'step')}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        finally:cancellation.set()
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

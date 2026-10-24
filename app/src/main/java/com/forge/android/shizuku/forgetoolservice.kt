@@ -24,27 +24,42 @@ import java.util.concurrent.TimeUnit
 class ForgeToolService : IForgeTool.Stub() {
 
     override fun shell(command: String, timeoutMs: Int): String? {
-        return runCatching {
-            val p = ProcessBuilder("sh", "-c", command)
-                .redirectErrorStream(true)
-                .start()
-            val out = p.inputStream.bufferedReader().use { it.readText() }
-            p.waitFor((timeoutMs / 1000L).coerceAtLeast(1L), TimeUnit.SECONDS)
-            out.take(64_000)
-        }.getOrNull()
+        var process: Process?=null
+        return try {
+            val p=ProcessBuilder("sh","-c",command).redirectErrorStream(true).start()
+            process=p
+            val output=java.io.ByteArrayOutputStream()
+            val reader=Thread {
+                runCatching { p.inputStream.use { input ->
+                    val buffer=ByteArray(4096)
+                    while(true) {val n=input.read(buffer);if(n<0)break
+                        if(output.size()<64000) output.write(buffer,0,minOf(n,64000-output.size()))}
+                } }
+            }.apply {start()}
+            if(!p.waitFor(timeoutMs.toLong().coerceIn(1,30000),TimeUnit.MILLISECONDS)) {
+                p.destroyForcibly();reader.join(1000);null
+            } else {
+                reader.join(1000)
+                if(reader.isAlive || p.exitValue()!=0) null else output.toString("UTF-8")
+            }
+        } catch(e:Exception) {null}
+        finally {process?.let { if(it.isAlive) it.destroyForcibly();runCatching {it.inputStream.close()} }}
     }
 
     override fun screencap(maxSide: Int): String? {
         val tmp = File(contextCache(), "cap-${System.currentTimeMillis()}.png")
+        var process: Process?=null
         return runCatching {
             // screencap 直出 png；-P 缩放在部分版本不可用，先全图再由端侧缩
             val p = ProcessBuilder("sh", "-c",
-                "screencap -p ${tmp.absolutePath}").start()
+                "screencap -p ${tmp.absolutePath}").redirectErrorStream(true).start()
+            process=p
             if (p.waitFor(10, TimeUnit.SECONDS) && p.exitValue() == 0 && tmp.length() > 0) {
                 val bytes = shrink(tmp, maxSide.coerceIn(320, 1440))
                 Base64.encodeToString(bytes, Base64.NO_WRAP)
             } else null
         }.also {
+            process?.let { if(it.isAlive) it.destroyForcibly();runCatching {it.inputStream.close()} }
             tmp.delete()
         }.getOrNull()
     }
