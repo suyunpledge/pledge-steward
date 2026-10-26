@@ -1,124 +1,80 @@
-# forge-android — Kotlin Compose 壳 + PRoot Ubuntu 24 + Shizuku + forge Python Agent
+# forge 手机版（Android）— 个人助理 + MCP 连接器市场
 
-当前为开发构建，审查结果见 [AUDIT-2026-10-23](docs/AUDIT-2026-10-23.md)。
-原生 PRoot/busybox、设备工具分发和操作确认 UI 仍未全部交付，不能把 APK
-编译成功视为真机 Agent 已可用。设备写操作当前明确拒绝，桥仅发布宿主实际
-上报的设备能力。HTTP/WS 使用安装级 Bearer token，Android loopback 并非 App 私有网络。
+> 桌面版（Windows：Work 对话 + Coding Mode）见 [仓库根 README](../README.zh.md)。
+> 本目录是**手机版**：Kotlin Compose 原生应用 + 设备端 Python Agent。
 
-> 安卓原生 App（Compose，非 WebView）。forge Python Agent 原样跑在 PRoot Ubuntu 24.04 用户态里（免 root、免 Termux），不动一行 forge 代码；Android 控制能力走 Shizuku（ADB shell 身份）+ 无障碍双通道；壳与 Agent 之间只加一层 FastAPI/Uvicorn + WebSocket 桥。
+## 一句话
 
-## 架构（分层定稿）
+手机上跑一个真正的 AI 个人助理：**内置联网搜索（零配置）、47 个服务一键接入（高德/12306/飞书/Notion/小红书/淘宝比价/GitHub 置顶）、手机原生工具（短信/通话/联系人）**——Python Agent 原样运行在设备上的 PRoot Ubuntu 24 用户态，免 root、免 Termux。
 
-```
-┌────────────────────────────────────┐
-│          Forge Android             │
-│     Kotlin + Jetpack Compose       │
-│  Chat / Work / Code / Settings     │
-└─────────────────┬──────────────────┘
-                  ▼
-┌────────────────────────────────────┐
-│           Agent Bridge             │
-│       FastAPI + WebSocket          │
-│       ToolCall Dispatcher          │
-└─────────────────┬──────────────────┘
-                  ▼
-┌────────────────────────────────────┐
-│           Python Agent             │
-│     Forge Core（原样，零改动）       │
-└─────────────────┬──────────────────┘
-        │ tool: android.*        │ tool: linux.*
-        ▼                        ▼
-┌──────────────────────┐  ┌──────────────────────┐
-│  Android Tool Adapter │  │  PRoot Ubuntu 24.04  │
-│  （Kotlin，双通道）     │  │  apt/Python/Node/    │
-│  ├ Accessibility      │  │  Git/SSH（标准用户态） │
-│  └ Shizuku UserService│  └──────────────────────┘
-│    （ADB shell UID）  │
-└──────────────────────┘
-```
-
-要点：
-- **Python Agent 不直接依赖 Shizuku**。它只发 `tools.call("android.ui.click", …)`，由 Kotlin 转发到双通道执行——forge Core 零改动。
-- **PRoot 与 Shizuku 是两个独立组件**：Shizuku（ADB 启动 = UID 2000 shell）不会把 PRoot 变成真 chroot；root 设备可选真 chroot 加速（同一套镜像）。
-- **Shizuku 断线不挡启动**：在线→完整 Android 工具；离线→普通 API + Linux Agent 继续可用；重连→自动恢复（工具能力上报是动态的）。
-
-## 工具命名空间
-
-| 命名空间 | 执行方 | 通道 |
-|---|---|---|
-| `android.screen.inspect / capture` | Kotlin | Accessibility dump / Shizuku screencap |
-| `android.ui.click / swipe / input` | Kotlin | Accessibility 优先，Shizuku `input` 兜底 |
-| `android.app.list / launch` | Kotlin | Shizuku pm（离线时 packageManager 降级） |
-| `android.device.info` | Kotlin | 系统 API |
-| `linux.shell.execute` | PRoot 内 | forge 自己的 shell 工具（受 Policy 裁决） |
-| `linux.file.read / write` | PRoot 内 | forge 文件工具（沙箱照常） |
-
-调用形如：
-```json
-{"tool": "android.ui.click", "arguments": {"x": 520, "y": 840},
- "execution": {"backend": "auto", "timeout_ms": 5000}}
-```
-`backend`: `auto`（默认，双通道择优）/ `accessibility` / `shizuku`。
-
-## 目录
+## 架构
 
 ```
-forge-android/
-├── README.md                本文件
-├── bridge/
-│   ├── PROTOCOL.md          壳↔Agent 契约（WS/HTTP/工具/降级）
-│   └── forge_bridge.py      FastAPI 桥（进镜像 /opt/forge）
-├── app/
-│   ├── build.gradle.kts     Shizuku API 13.1.5 + Compose
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       ├── res/xml/accessibility_service.xml
-│       └── java/com/forge/android/
-│           ├── MainActivity.kt          Compose 对话 UI
-│           ├── bridge/
-│           │   ├── AgentBridgeService.kt  前台服务 + WS 双向流
-│           │   ├── ProotManager.kt        rootfs 解包 + PRoot/chroot 执行
-│           │   └── PythonSupervisor.kt    子进程 watchdog
-│           ├── shizuku/
-│           │   ├── ShizukuGate.kt         状态/权限/降级状态机
-│           │   └── ForgeToolService.kt    UserService（高权限工具进程）
-│           └── tools/
-│               └── DeviceTools.kt         android.* 分发（双通道）
-└── docs/
-    └── ROOTFS.md            镜像制作（debootstrap → proot 适配 tar）
+┌──────────── Android ────────────┐
+│ Kotlin Compose App              │
+│  💬 对话 │ 🤝 助理 │ 🧩 目录     │
+│  AgentBridgeService（前台服务）   │
+├────────────────────────────────┤
+│ FastAPI 桥 127.0.0.1:8000       │
+│  Bearer token · WS 双向流       │
+│  内置 web_search 工具            │
+│  MCP 连接器（stdio + HTTP 双传输）│
+├────────────────────────────────┤
+│ forge Agent（PRoot Ubuntu 24）  │
+│  纯标准库内核 · Policy 裁决一切   │
+├────────────────────────────────┤
+│ 设备工具：Accessibility+Shizuku  │
+│  只读直行 · 写操作确认气泡        │
+└────────────────────────────────┘
 ```
+
+## 三种用法
+
+### 1. 直接问（零配置）
+打开「🤝 助理」输入问题——`web_search` 已内置：博查 Key → Brave Key → Bing RSS 免费兜底（国内直连）。不用装任何连接器。
+
+### 2. 一键接入服务（🧩 目录）
+置顶 7 个常用：**高德地图 / 12306 / 飞书 / Notion / 小红书 / 淘宝比价 / GitHub**。点卡片 → 弹授权表单（「去获取 Key →」直跳控制台）→ 安装并连接。免费直连的（12306/A股/淘宝比价/京东秒杀/Playwright/Context7/Airbnb）点一下就装。
+
+其余按场景折叠：办公协作(10) / 生活日常(14) / 开发运维(8) / 专业服务(8)。
+
+### 3. 手机原生工具
+`phone.sms.list/search/send`、`phone.call.dial/log`、`phone.contacts.search`——读短信/查通话/搜联系人直接用；发短信/拨号弹确认。
 
 ## 构建
 
-### 1) rootfs 镜像（PC/WSL 上一次性）
-
-见 `docs/ROOTFS.md`：debootstrap arm64 noble → 装 python3/uvicorn/fastapi + `/opt/forge` 全仓 → tar。产出 `forge-rootfs-arm64.tar` 放 `app/src/main/assets/`。
-
-### 2) APK
-
 ```bash
-cd forge-android && ./gradlew :app:assembleDebug   # JDK17 + SDK 34
+# 1) rootfs 镜像（PC/WSL 一次性，见 docs/ROOTFS.md）
+# 2) 宿主二进制（proot/busybox arm64）
+python scripts/fetch-host-bins.py
+# 3) APK
+./gradlew :app:assembleDebug
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### 3) 首启流程
+灰度版状态与真机待办（INTERP/linker 方案等）：[`docs/GRAY-RELEASE.md`](docs/GRAY-RELEASE.md)
 
-解包 rootfs → PRoot 起 uvicorn（127.0.0.1:8000）→ /health 过 → WS 连接 → 对话页可用。Shizuku/无障碍在「设置页」按向导开启，随时补。
+## 目录
 
-## 权限与安全
+| 路径 | 内容 |
+|---|---|
+| `app/src/main/java/com/forge/android/` | Compose 壳（对话/助理/目录三 Tab）+ 桥服务 + Shizuku/无障碍 |
+| `bridge/forge_bridge.py` | FastAPI 桥：WS/SSE、Bearer 认证、工具分发 |
+| `bridge/mcp_connectors.py` + `mcp_remote.py` | MCP 运行时：stdio 子进程 + 官方远程 HTTP 双传输 |
+| `bridge/connector_catalog.py` | 47 服务预置目录（场景分组数据源） |
+| `bridge/web_search_tools.py` | 内置联网搜索（三级降级） |
+| `bridge/phone_tools.py` | 手机原生工具定义 |
+| `bridge/PROTOCOL.md` | 壳↔Agent 契约（含远程控制电脑预留 §6） |
+| `docs/` | ROOTFS 制作 / 连接器目录 / 灰度状态 |
+| `tests/` | 冒烟套件（桥/助理/远程/目录，全绿） |
 
-- Manifest：悬浮窗、无障碍服务声明、前台服务、电池白名单；Shizuku 权限运行时请求（requestCode 1001）。
-- uvicorn 仅 lo；`/tool/call` 不出 App 沙箱。
-- forge Policy 照常裁决所有 android.*/linux.* 工具——Kotlin「能做」≠ Python「被允许」。
-- 操作分级：点击/输入 = 需前台可见确认气泡（悬浮窗）；inspect/capture = 只读放行；shell = Shizuku 在线才注册。
+## 与桌面版的关系
 
-## 远程控制电脑 forge（预留，v0.2+）
+同一 `forge/` 内核零改动。桌面版管代码与电脑控制；手机版管个人助理与设备工具。远程互通（手机控制电脑 forge）协议已留，v0.2+ 接通。
 
-`bridge/RemoteControl.kt` 占位：反向 WS + `/remote/*` 路由组；桌面端 computer_use 套件（observe/act/click + 审批）是现成对接面。契约见 PROTOCOL.md §6。
+## 安全纪律
 
-## 状态
-
-- [x] 工程骨架 / 协议契约 / 桥服务 / Compose 壳 / Shizuku 双通道与降级状态机
-- [ ] rootfs 镜像（PC 侧 debootstrap 产出 tar）
-- [ ] 真机联调（PRoot 冷启动耗时、无障碍点击闭环、Shizuku 重连恢复）
-- [ ] llama.cpp 本地推理（镜像内 apt/源码编，:8101）
+- 桥仅监听 127.0.0.1 + 安装级随机 token；`/tool/call` 不出 App 沙箱
+- 所有工具走 forge Policy（mode×sandbox）；连接器「能做」≠ Agent「被允许」
+- 设备写操作（点击/输入/发短信/拨号）必须确认；截图不落盘
+- 连接器崩溃只摘除自身工具面，不炸桥；重连自动恢复
