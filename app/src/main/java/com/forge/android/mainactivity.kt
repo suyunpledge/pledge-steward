@@ -60,6 +60,13 @@ class MainActivity : ComponentActivity() {
                     "${obj.optString("execution_state", "结束")} · ${obj.optInt("steps")} 步 · ¥${obj.optDouble("cost")}"))
                 }
                 "run_failed" -> { running.value=false; append(ChatItem("error", obj.optString("error"))) }
+                "tool_call" -> append(ChatItem("summary", "正在调用 ${obj.optString("tool")}；设备输入需要单次确认"))
+                "agent.tool_completed" -> {
+                    val state=obj.optString("execution_state")
+                    val status=if(state=="unknown") "结果未知，请检查屏幕" else if(obj.optBoolean("ok")) "已返回，需核对实际效果" else "未完成"
+                    append(ChatItem("summary", "${obj.optString("tool")}：$status"))
+                }
+                "tool_delivery_failed" -> append(ChatItem("error",obj.optString("error")))
                 "error" -> append(ChatItem("error", obj.optString("error")))
                 "shizuku_state" -> shizukuState.value = obj.optString("state")
                 "fatal" -> append(ChatItem("error", obj.optString("error")))

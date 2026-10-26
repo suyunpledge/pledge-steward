@@ -26,7 +26,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 FORGE_ROOT = Path(os.environ.get("FORGE_ROOT", "/opt/forge"))
 import sys
@@ -114,10 +114,11 @@ _tool_waiters: dict[str, asyncio.Future] = {}
 
 class ToolResultPayload(BaseModel):
     call_id: str
-    ok: bool
+    ok: StrictBool
     result: dict[str, Any] | None = None
     error: str | None = None
     execution_state: Literal["completed","not_started","unknown"] | None = None
+    error_code: str | None = None
 
 
 @app.post("/tool/call")
@@ -126,24 +127,63 @@ async def tool_result(payload: ToolResultPayload):
     if fut is None or fut.done():
         raise HTTPException(404, "unknown or expired call_id")
     fut.set_result({"ok": payload.ok, "result": payload.result or {},
-                    "error": payload.error, "execution_state":payload.execution_state})
+                    "error": payload.error, "execution_state":payload.execution_state, 'error_code':payload.error_code})
     return {"accepted": True}
 
 
-async def _dispatch_android_tool(tool: str, arguments: dict[str, Any], emit) -> dict[str, Any]:
+DEVICE_TOOL_TIMEOUT = 30.0
+CANCEL_RECEIPT_TIMEOUT = 3.0
+
+
+async def _dispatch_android_tool(tool: str, arguments: dict[str, Any], emit, *, cancellation=None, identity=None) -> dict[str, Any]:
+    from bridge_tools import WRITE_TOOLS
+    if cancellation is not None and cancellation.is_set():
+        return {'ok':False, 'error':'Cancelled before device dispatch', 'execution_state':'not_started', 'error_code':'cancelled'}
     call_id = f"tc-{time.monotonic_ns()}"
     loop = asyncio.get_running_loop()
     fut = loop.create_future()
     _tool_waiters[call_id] = fut
+    watcher = None
+    sent = False
+    cancel_sent = False
+    async def revoke():
+        nonlocal cancel_sent
+        if not cancel_sent:
+            cancel_sent = True
+            await emit({'type':'cancel_tool','call_id':call_id, **(identity or {})})
+    async def watch_cancel():
+        while not fut.done():
+            if cancellation is not None and cancellation.is_set():
+                await revoke()
+                # The host can still prove approval was pending or input completed.
+                await asyncio.sleep(CANCEL_RECEIPT_TIMEOUT)
+                if not fut.done():
+                    fut.set_result({'ok':False, 'error':'Cancelled without a device receipt; inspect before retry',
+                        'execution_state':'unknown' if tool in WRITE_TOOLS else 'not_started',
+                        'error_code':'device_receipt_lost' if tool in WRITE_TOOLS else 'cancelled'})
+                return
+            await asyncio.sleep(.05)
     try:
-        await emit({"type": "tool_call", "call_id": call_id, "tool": tool,
+        delivered = await emit({**(identity or {}), "type": "tool_call", "call_id": call_id, "tool": tool,
                     "arguments": arguments})
-        return await asyncio.wait_for(fut, timeout=30.0)
+        if delivered is False:
+            return {'ok':False,'error':'Device host disconnected before dispatch','execution_state':'not_started','error_code':'host_disconnected'}
+        sent = True
+        watcher = asyncio.create_task(watch_cancel())
+        return await asyncio.wait_for(fut, timeout=DEVICE_TOOL_TIMEOUT)
     except asyncio.TimeoutError:
-        await emit({"type":"cancel_tool","call_id":call_id})
+        await revoke()
         return {"ok": False, "error": "device tool timeout (30s)",
-                "execution_state":"unknown" if tool in {"android.ui.click","android.ui.swipe","android.ui.input","android.app.launch"} else "not_started"}
+                "execution_state":"unknown" if tool in WRITE_TOOLS else "not_started", 'error_code':'device_timeout'}
+    except asyncio.CancelledError:
+        if sent: await revoke()
+        raise
     finally:
+        if watcher is not None:
+            watcher.cancel()
+            try: await watcher
+            except asyncio.CancelledError: pass
+        if not fut.done(): fut.cancel()
         _tool_waiters.pop(call_id, None)
 
 
@@ -159,9 +199,13 @@ async def agent_ws(ws: WebSocket):
     opened=True;active=None;cancel=None
     async def emit(event):
         if opened:
-            try:await ws.send_text(json.dumps(event,ensure_ascii=False))
+            try:
+                await ws.send_text(json.dumps(event,ensure_ascii=False))
+                return True
             except (RuntimeError,WebSocketDisconnect):
                 if cancel:cancel.set()
+                return None  # A failed send may have reached the host; await cancellation evidence.
+        return False
     try:
         await ws.accept()
         agent=_sessions.get(session_id)
@@ -231,7 +275,11 @@ async def _run_agent(agent: Agent, task: str, history: list, emit, ws_loop=None,
     def _worker():
         try:
             if hasattr(agent, "registry"):
-                register_android_tools(agent.registry,_android_tools,_dispatch_android_tool,emit,loop,approval_available=_device_approval)
+                async def dispatch(name, args, emitter):
+                    return await _dispatch_android_tool(name,args,emitter,
+                        cancellation=agent.cancellation_event, identity=request.as_dict())
+                register_android_tools(agent.registry,_android_tools,dispatch,emit,loop,
+                    approval_available=_device_approval, available=lambda: _android_tools)
                 agent._observer = observer
             with agent.session:
                 report = agent.run(task, history=history,run_request=request)

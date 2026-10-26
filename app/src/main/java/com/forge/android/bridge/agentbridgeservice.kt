@@ -170,6 +170,7 @@ class AgentBridgeService : Service() {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (webSocket !== ws || serviceState == "idle") return
                 runCatching { JSONObject(text) }.getOrNull()?.let { obj ->
                     when (obj.optString("type")) {
                         "ready" -> { reconnectAttempt=0; setState("ready") }
@@ -245,12 +246,21 @@ class AgentBridgeService : Service() {
                 result?.let { put("result", it) }
                 error?.let { put("error", it) }
             }
-            runCatching {
-                client.newCall(Request.Builder()
+            var failure = ""
+            for (attempt in 0..1) {
+                ensureActive()
+                try { val code=client.newCall(Request.Builder()
                     .url("http://127.0.0.1:8000/tool/call")
                     .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-                    .build()).execute().use { Log.d(TAG, "tool result posted: ${it.code}") }
+                    .build()).execute().use { it.code }
+                    if(code in 200..299) return@launch
+                    failure="HTTP $code"
+                    if(code in 400..499) break
+                } catch(e:java.io.IOException) { failure=e.message ?: "connection lost" }
+                if(attempt==0) delay(250) // Retry the receipt only, never the device operation.
             }
+            emit(JSONObject().put("type","tool_delivery_failed").put("call_id",callId)
+                .put("error","工具回执未确认（$failure）；操作不会自动重试，请检查目标状态"))
         }
     }
 

@@ -20,12 +20,127 @@ from fastapi.testclient import TestClient
 from forge.tools import ToolRegistry, ToolContext
 from forge.policy import Policy, Mode
 import forge_bridge as bridge
-from bridge_tools import register_android_tools
+from bridge_tools import register_android_tools, device_result
 
 class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.client=TestClient(bridge.app)
         self.headers={'Authorization':'Bearer '+os.environ['FORGE_BRIDGE_TOKEN']}
+
+    def test_device_receipt_is_strict_and_unknown_cannot_claim_success(self):
+        for response in ({'ok':'false'}, {'ok':True,'execution_state':'not_started'},
+                         {'ok':True,'result':[]}, {'ok':True,'execution_state':'running'}, {'ok':True,'error':'failed'}):
+            result=device_result('android.ui.click', response)
+            self.assertFalse(result.ok)
+            self.assertEqual(result.meta['execution_state'],'unknown')
+        result=device_result('android.ui.click', {'ok':True,'execution_state':'unknown'})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta['execution_state'],'unknown')
+        self.assertEqual(self.client.post('/tool/call',headers=self.headers,
+            json={'call_id':'none','ok':'false'}).status_code,422)
+
+    def test_invalid_device_arguments_never_reach_host(self):
+        async def run():
+            registry=ToolRegistry();calls=[]
+            async def dispatch(*args):
+                calls.append(args);return {'ok':True}
+            register_android_tools(registry,{'android.ui.click','android.ui.input','android.screen.capture'},dispatch,None,
+                asyncio.get_running_loop(),approval_available=True)
+            ctx=ToolContext(Policy(mode=Mode.BYPASS,workspace=Path(TEMP.name)),Path(TEMP.name))
+            try:
+                for tool,args in [('android.ui.click',{'x':True,'y':2}),('android.ui.click',{'x':1.1,'y':2}),
+                    ('android.ui.click',{'x':1,'y':2,'script':'bad'}),('android.ui.input',{'text':'a'*4001}),
+                    ('android.screen.capture',{'max_side':0})]:
+                    result=await asyncio.to_thread(registry.invoke,tool,args,ctx)
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.meta['execution_state'],'not_started')
+                self.assertFalse(calls)
+            finally:ctx.secret_scope.close()
+        asyncio.run(run())
+
+    def test_capability_revocation_after_registration_blocks_dispatch(self):
+        async def run():
+            registry=ToolRegistry();calls=[];available={'android.device.info'}
+            async def dispatch(*args):calls.append(args);return {'ok':True}
+            register_android_tools(registry,available,dispatch,None,asyncio.get_running_loop(),available=lambda:available)
+            available.clear()
+            ctx=ToolContext(Policy(mode=Mode.BYPASS,workspace=Path(TEMP.name)),Path(TEMP.name))
+            try:
+                result=await asyncio.to_thread(registry.invoke,'android.device.info',{},ctx)
+                self.assertEqual(result.meta['error_code'],'capability_unavailable')
+                self.assertFalse(calls)
+            finally:ctx.secret_scope.close()
+        asyncio.run(run())
+
+    def test_cancelled_device_call_waits_for_host_receipt_without_replay(self):
+        async def run():
+            token=threading.Event();events=[]
+            async def emit(event):
+                events.append(event)
+                if event['type']=='tool_call':token.set()
+                elif event['type']=='cancel_tool':
+                    await bridge.tool_result(bridge.ToolResultPayload(call_id=event['call_id'],ok=False,
+                        execution_state='not_started',error='approval cancelled'))
+            result=await bridge._dispatch_android_tool('android.ui.click',{'x':1,'y':2},emit,cancellation=token,
+                identity={'run_id':'run-cancel'})
+            self.assertEqual(result['execution_state'],'not_started')
+            self.assertEqual([e['type'] for e in events],['tool_call','cancel_tool'])
+            self.assertEqual(events[0]['run_id'],'run-cancel')
+            self.assertNotIn(events[0]['call_id'],bridge._tool_waiters)
+        asyncio.run(run())
+
+    def test_cancel_without_device_receipt_is_bounded_unknown(self):
+        async def run():
+            token=threading.Event();events=[]
+            async def emit(event):
+                events.append(event)
+                if event['type']=='tool_call':token.set()
+            with patch.object(bridge,'CANCEL_RECEIPT_TIMEOUT',.02):
+                result=await asyncio.wait_for(bridge._dispatch_android_tool('android.ui.click',{},emit,cancellation=token),1)
+            self.assertEqual(result['execution_state'],'unknown')
+            self.assertEqual(len(events),2)
+        asyncio.run(run())
+
+    def test_cancel_before_dispatch_and_closed_host_do_not_emit_input(self):
+        async def run():
+            token=threading.Event();token.set();events=[]
+            async def emit(event):events.append(event)
+            result=await bridge._dispatch_android_tool('android.ui.click',{},emit,cancellation=token)
+            self.assertEqual(result['execution_state'],'not_started');self.assertFalse(events)
+            async def closed(event):return False
+            result=await bridge._dispatch_android_tool('android.ui.click',{},closed)
+            self.assertEqual(result['error_code'],'host_disconnected')
+        asyncio.run(run())
+
+    def test_real_agent_device_roundtrip_persists_results_and_finishes(self):
+        from forge.model import ModelRouter,Provider,Usage
+        class Transport:
+            count=0
+            def complete(self,provider,model,messages,**options):
+                self.count+=1
+                reply='{"tool":"android.device.info","args":{}}' if self.count==1 else 'Device inspected successfully'
+                return reply,Usage(prompt_tokens=1,completion_tokens=1,model=model,provider=provider.name)
+        async def run():
+            events=[];transport=Transport()
+            agent=bridge._build_session_agent('device-roundtrip')
+            agent.router=ModelRouter([Provider('fixture','http://127.0.0.1:1',default_model='fixture')],transport=transport)
+            async def emit(event):
+                events.append(event)
+                if event['type']=='tool_call':
+                    await bridge.tool_result(bridge.ToolResultPayload(call_id=event['call_id'],ok=True,
+                        execution_state='completed',result={'model':'fixture-device'}))
+            with patch.object(bridge,'_android_tools',{'android.device.info'}):
+                await bridge._run_agent(agent,'Inspect my phone',[],emit)
+            self.assertEqual(events[-1]['type'],'run_done',events[-1])
+            self.assertEqual(events[-1]['execution_state'],'final',events[-1])
+            self.assertEqual(transport.count,2)
+            calls=[e for e in events if e['type']=='tool_call']
+            self.assertEqual(len(calls),1)
+            self.assertEqual(calls[0]['run_id'],events[0]['run_id'])
+            journal=(bridge.HOME/'sessions/phone-device-roundtrip.jsonl').read_text(encoding='utf-8')
+            self.assertIn('fixture-device',journal)
+            self.assertIn('tool_completed',journal)
+        asyncio.run(run())
 
     def test_host_capabilities_cannot_enable_unconfirmed_writes(self):
         for approval,expected in ((False,[]),(True,['android.ui.click'])):

@@ -42,7 +42,7 @@ class ForgeAccessibility : AccessibilityService() {
         fun dumpXml(maxDepth: Int = 30): String? {
             val svc = instance ?: return null
             val root = svc.rootInActiveWindow ?: return null
-            val sb = StringBuilder("<hierarchy rotation=0>")
+            val sb = StringBuilder("<hierarchy>")
             var total=0
             fun escape(s:String)=s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\"","&quot;")
             fun walk(node: AccessibilityNodeInfo?, depth: Int) {
@@ -57,12 +57,16 @@ class ForgeAccessibility : AccessibilityService() {
                 if (!text.isNullOrBlank()) {
                     sb2.append(" text=\"").append(escape(text)).append("\"")
                 }
-                val desc = node.contentDescription?.toString()?.take(80)
+                val desc = if(node.isPassword) null else node.contentDescription?.toString()?.take(80)
                 if (!desc.isNullOrBlank()) {
                     sb2.append(" content-desc=\"").append(escape(desc)).append("\"")
                 }
                 val clickable = node.isClickable
                 if (clickable) sb2.append(" clickable=\"true\"")
+                sb2.append(" enabled=\"").append(node.isEnabled).append("\"")
+                    .append(" editable=\"").append(node.isEditable).append("\"")
+                    .append(" focused=\"").append(node.isFocused).append("\"")
+                    .append(" password=\"").append(node.isPassword).append("\"")
                 val children = node.childCount
                 if (children == 0) { sb2.append("/>"); return }
                 sb2.append(">")
@@ -100,6 +104,8 @@ class ForgeAccessibility : AccessibilityService() {
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
             return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         }
+
+        fun hasEditableInput(): Boolean = instance?.let { findFocusedEditable(it) != null } ?: false
 
         /** 截图（API 30+；TakeScreenshotCallback 异步转同步等待）。 */
         fun takeScreenshot(timeoutMs: Long = 3000): Bitmap? {
@@ -152,7 +158,8 @@ class ForgeAccessibility : AccessibilityService() {
         private fun findFocusedEditable(svc: AccessibilityService): AccessibilityNodeInfo? {
             var node = svc.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             while (node != null) {
-                if (node.isEditable) return node
+                if (node.isPassword) return null
+                if (node.isEditable && node.isEnabled && !node.isPassword) return node
                 node = node.parent
             }
             return null

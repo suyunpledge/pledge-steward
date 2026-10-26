@@ -51,23 +51,31 @@ class DeviceTools(
             if(seen.size>1024) seen.remove(seen.first())
         }
         val parameters=JSONObject(args.toString())
+        val state = DeviceCallState(tool in writes)
+        fun report(result: JSONObject) {
+            if (!state.claimReceipt()) return
+            audit(tool, parameters, result)
+            val error = if (result.has("error") && !result.isNull("error")) result.optString("error") else null
+            service.postToolResult(callId, result.optBoolean("ok"), result.optJSONObject("result"),
+                error, result.optString("execution_state", if(result.optBoolean("ok")) "completed" else state.failureState()))
+        }
         val job = scope.launch(start=kotlinx.coroutines.CoroutineStart.LAZY) {
-            val result = try { dispatch(tool, parameters) }
-                catch (e: kotlinx.coroutines.CancellationException) { fail("Device call cancelled; observe before retry",if(tool in writes) "unknown" else "not_started") }
-                catch (e: Exception) { fail("dispatch error: ${e.message}") }
-            audit(tool, args, result)
-            val errMsg = if (result.has("error") && !result.isNull("error"))
-                result.optString("error") else null
-            service.postToolResult(
-                callId, result.optBoolean("ok"), result.optJSONObject("result"),
-                errMsg, result.optString("execution_state",if(result.optBoolean("ok")) "completed" else "not_started"))
+            val result = try { dispatch(tool, parameters, state) }
+                catch (e: kotlinx.coroutines.CancellationException) { fail("Device call cancelled; observe before retry", state.failureState()) }
+                catch (e: Exception) { fail("dispatch error: ${e.message}", state.failureState()) }
+            report(result)
         }
         jobs[callId]=job
-        job.invokeOnCompletion { jobs.remove(callId,job) }
+        job.invokeOnCompletion {
+            jobs.remove(callId,job)
+            // Lazy jobs cancelled before their body starts must also settle the bridge.
+            report(fail("Device call ended without a receipt", state.failureState()))
+        }
         job.start()
     }
 
-    private suspend fun dispatch(tool: String, args: JSONObject): JSONObject {
+    private suspend fun dispatch(tool: String, args: JSONObject, state: DeviceCallState): JSONObject {
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
         if (!tool.startsWith("android.")) {
             return fail("not an android.* tool: $tool")
         }
@@ -92,7 +100,7 @@ class DeviceTools(
                 if(before!=null && (target!=ForgeAccessibility.foregroundPackage() || before!=ForgeAccessibility.dumpXml()))
                     return fail("Target changed during approval; observe again","not_started")
                 // One backend only: a failed receipt is not permission to replay.
-                return performWrite(tool,args)
+                return performWrite(tool,args,state)
             } finally {inputLock.unlock()}
         }
         return when (tool) {
@@ -120,38 +128,46 @@ class DeviceTools(
         }
     }
 
-    private suspend fun performWrite(tool: String,args: JSONObject): JSONObject {
+    private suspend fun performWrite(tool: String,args: JSONObject,state: DeviceCallState): JSONObject {
         var dispatched=false
         return try {
             validateInput(tool,args) // Screen rotation/size can change during approval.
             check(tool=="android.app.launch" || ForgeAccessibility.isEnabled) {"Accessibility capability lost"}
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if(tool=="android.ui.input" && !ForgeAccessibility.hasEditableInput())
+                return fail("Focus an enabled non-password input before setting text", "not_started")
+            if(tool=="android.app.launch" && context.packageManager.getLaunchIntentForPackage(args.getString("package"))==null)
+                return fail("Package has no launchable activity", "not_started")
             dispatched=true
+            state.markDispatched()
             val success=when(tool) {
                 "android.ui.click" -> ForgeAccessibility.tap(args.getInt("x"),args.getInt("y"))
                 "android.ui.swipe" -> ForgeAccessibility.swipe(args.getInt("x1"),args.getInt("y1"),args.getInt("x2"),args.getInt("y2"),args.optInt("duration_ms",300).toLong())
                 "android.ui.input" -> ForgeAccessibility.setText(args.getString("text"))
                 else -> {val intent=context.packageManager.getLaunchIntentForPackage(args.getString("package"));if(intent!=null) {context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));true} else false}
             }
-            if(success) ok(JSONObject().put("dispatched",true).put("verification","backend_receipt")) else fail("Input receipt failed; inspect screen before retry","unknown")
+            if(success) ok(JSONObject().put("dispatched",true).put("verification","backend_receipt")
+                .put("next_step","android.screen.inspect").put("foreground_package",ForgeAccessibility.foregroundPackage()))
+            else fail("Input receipt failed; inspect screen before retry","unknown")
         } catch(e:Exception) {fail("Input error: ${e.message}",if(dispatched) "unknown" else "not_started")}
     }
 
     // ── 各工具实现：先无障碍，后 Shizuku，双降级 ───────────────────
     private suspend fun uiInspect(): JSONObject {
         val xml = ForgeAccessibility.dumpXml()
-        if (xml != null) return ok(JSONObject().put("xml", xml.take(64_000)))
-        val sh = ForgeToolClient.uiDump()
-        if (sh != null) return ok(JSONObject().put("xml", sh))
+        if (xml != null) return ok(screenInfo().put("xml", xml).put("source","accessibility"))
+        val sh = runCatching { ForgeToolClient.uiDump() }.getOrNull()
+        if (sh != null) return ok(screenInfo().put("xml", sh.take(64_000)).put("truncated",sh.length>64_000).put("source","shizuku"))
         return fail("no ui tree source (accessibility off, shizuku offline)")
     }
 
     private suspend fun screenCapture(maxSide: Int): JSONObject {
         // 首选 Shizuku screencap（无弹窗）；无障碍 takeScreenshot 备选
         if (shizukuGate.state.value == "online" && ForgeToolClient.isReady) {
-            val b64 = ForgeToolClient.screencap(maxSide)
+            val b64 = runCatching { ForgeToolClient.screencap(maxSide) }.getOrNull()
             if (b64 != null) {
-                return ok(JSONObject().put("base64_png", b64)
-                    .put("source", "shizuku"))
+                val captured=runCatching { captureResult(b64, "shizuku") }.getOrNull()
+                if(captured?.optBoolean("ok")==true) return captured
             }
         }
         val shot = ForgeAccessibility.takeScreenshot()
@@ -159,16 +175,17 @@ class DeviceTools(
             val scaled = scale(shot, maxSide)
             val b64 = Base64.encodeToString(scaled, Base64.NO_WRAP)
             shot.recycle()
-            return ok(JSONObject().put("base64_png", b64).put("source", "accessibility"))
+            return captureResult(b64, "accessibility")
         }
         return fail("no capture source")
     }
 
     private suspend fun appList(): JSONObject {
-        val sh = ForgeToolClient.packageList()
+        val sh = runCatching { ForgeToolClient.packageList() }.getOrNull()
         if (sh != null) {
+            val packages=DevicePackages.parse(sh)
             return ok(JSONObject().put("packages",
-                JSONArray(sh.lineSequence().take(200).toList())))
+                JSONArray(packages.take(200))).put("truncated",packages.size>200))
         }
         val pm = context.packageManager.getInstalledApplications(PackageManagerGET_INSTALLED)
         val arr = JSONArray()
@@ -200,6 +217,22 @@ class DeviceTools(
     }
 
     // ── helpers ───────────────────────────────────────────────────
+    private fun screenInfo(): JSONObject {
+        val dm=screenMetrics()
+        return JSONObject().put("screen_width",dm.widthPixels).put("screen_height",dm.heightPixels)
+            .put("coordinate_space","physical_screen_pixels")
+            .put("foreground_package",ForgeAccessibility.foregroundPackage())
+    }
+    private fun captureResult(b64: String, source: String): JSONObject {
+        val bytes=Base64.decode(b64,Base64.DEFAULT)
+        val options=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,options)
+        if(options.outWidth<=0 || options.outHeight<=0) return fail("Invalid screenshot payload")
+        return ok(screenInfo().put("source",source)
+            .put("image_width",options.outWidth).put("image_height",options.outHeight)
+            .put("coordinate_note","Image may be scaled; inspect current screen before input. Rotation invalidates earlier coordinates.")
+            .put("base64_png",b64))
+    }
     private fun screenMetrics(): android.util.DisplayMetrics {
         val dm=android.util.DisplayMetrics()
         val wm=context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
