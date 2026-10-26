@@ -42,6 +42,11 @@ class AskBody(BaseModel):
     history: list[dict[str, Any]] | None = None
 
 
+class CatalogInstallBody(BaseModel):
+    id: str
+    credentials: dict[str, str] = {}
+
+
 ASSISTANT_SYSTEM_HINT = (
     "【个人助理模式】用户在手机上与你对话。优先使用可用的连接器工具"
     "（日历/笔记/外部应用）完成任务；设备操作只读为主。回答简短、"
@@ -51,6 +56,52 @@ ASSISTANT_SYSTEM_HINT = (
 
 def register_routes(app) -> None:
     """把助理模式路由挂到 FastAPI app（forge_bridge 启动时调用）。"""
+
+    @app.get("/assistant/catalog")
+    def catalog_list():
+        """预置连接器目录（一键接入的数据源）。
+
+        Kotlin 渲染成目录页：分类分组 + 搜索；用户点某个服务 → 表单
+        （按 auth.kind 渲染字段，console_url 做「去获取 Key」按钮）→
+        提交回 POST /assistant/connectors 即完成接入。
+        """
+        from connector_catalog import CATALOG
+        return {"catalog": CATALOG}
+
+    @app.post("/assistant/catalog/install")
+    def catalog_install(body: "CatalogInstallBody"):
+        """一键接入：目录 id + 凭据字段 → 建连接器并启动。
+
+        url 中的 {VAR} 占位符用 env 值替换（腾讯地图这类 key-in-url 型）。
+        """
+        from connector_catalog import by_id
+        import re as _re
+        item = by_id(body.id)
+        if item is None:
+            return {"ok": False, "error": f"unknown catalog id: {body.id}"}
+        env = {f["env"]: body.credentials.get(f["env"], "")
+               for f in item["auth"]["fields"]}
+        # 缺凭据检查（auth.kind=none 跳过）
+        if item["auth"]["kind"] != "none":
+            missing = [f["label"] for k, v in env.items() if not v
+                       for f in item["auth"]["fields"] if f["env"] == k]
+            if missing:
+                return {"ok": False, "error": f"missing credentials: {missing}"}
+        if item["transport"] == "http":
+            url = item["url"]
+            for k, v in env.items():
+                url = url.replace("{" + k + "}", v)
+            url = _re.sub(r"\{[A-Z_]+\}", "", url)   # 未填的可选占位清掉
+            result = mc.upsert(body.id, env=env, url=url)
+        else:
+            result = mc.upsert(body.id, command=item["command"], env=env)
+        if result.get("ok"):
+            ensure = mc.ensure_one(body.id)
+            result["connector"] = ensure
+            result["name"] = item["name"]
+        return result
+
+
 
     @app.post("/assistant/connectors")
     def upsert_connector(body: ConnectorBody):

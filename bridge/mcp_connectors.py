@@ -262,7 +262,7 @@ def ensure_one(name: str) -> dict[str, Any]:
     spec = cfg[name]
     conn = _connectors.get(name)
     if conn is None:
-        conn = Connector(name, spec.get("command", []), spec.get("env") or {})
+        conn = _build_connector(name, spec)
         _connectors[name] = conn
     conn.stop()
     ok = conn.start() and conn.handshake()

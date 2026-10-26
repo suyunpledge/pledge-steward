@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AssistantScreen(onAsk: (String) -> Unit) {
+fun AssistantScreen(onAsk: (String) -> Unit, onOpenCatalog: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var connectors by remember { mutableStateOf listOf<ConnectorSnap>() }
@@ -60,7 +60,8 @@ fun AssistantScreen(onAsk: (String) -> Unit) {
         topBar = {
             TopAppBar(title = { Text("个人助理") },
                 actions = {
-                    TextButton(onClick = { showAdd = true }) { Text("添加连接器") }
+                    TextButton(onClick = onOpenCatalog) { Text("+ 目录") }
+                    TextButton(onClick = { showAdd = true }) { Text("自定义") }
                 })
         },
     ) { pad ->

@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.forge.android.bridge.AgentBridgeService
 import com.forge.android.ui.AssistantScreen
+import com.forge.android.ui.CatalogScreen
 import com.forge.android.shizuku.ShizukuGate
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
@@ -73,23 +74,25 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun App() {
-        var tab by remember { mutableIntStateOf(0) }
+        var tab by remember { mutableIntStateOf(0) }   // 0 对话 / 1 助理 / 2 目录
         MaterialTheme {
             Column(Modifier.fillMaxSize()) {
                 StatusStrip()
                 when (tab) {
                     0 -> MessageList(Modifier.weight(1f))
-                    else -> Box(Modifier.weight(1f)) {
+                    1 -> Box(Modifier.weight(1f)) {
                         AssistantScreen(onAsk = { text ->
-                            // 助理提问走助理会话（桥内 session=assistant-default）
                             append(ChatItem("user", text))
                             val payload = JSONObject()
                                 .put("type", "run")
                                 .put("session", "assistant-default")
                                 .put("task", text)
                             AgentBridgeService.send(this@MainActivity, payload.toString())
-                            tab = 0    // 提问后跳回对话页看回答
-                        })
+                            tab = 0
+                        }, onOpenCatalog = { tab = 2 })
+                    }
+                    else -> Box(Modifier.weight(1f)) {
+                        CatalogScreen(onInstalled = { tab = 1 })
                     }
                 }
                 NavigationBar {
@@ -97,6 +100,8 @@ class MainActivity : ComponentActivity() {
                         icon = { Text("💬") }, label = { Text("对话") })
                     NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
                         icon = { Text("🤝") }, label = { Text("助理") })
+                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
+                        icon = { Text("🧩") }, label = { Text("目录") })
                 }
                 if (tab == 0) InputBar(onSend = { send(it) })
             }
