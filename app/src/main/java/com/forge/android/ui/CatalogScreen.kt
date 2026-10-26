@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -22,6 +23,7 @@ import org.json.JSONObject
  * 场景分组（办公协作/生活日常/开发运维/专业服务，默认折叠，点标题展开）。
  * 联网搜索已内置进 Agent（web_search 工具），不在目录占位。
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun CatalogScreen(onInstalled: () -> Unit) {
     val context = LocalContext.current
@@ -35,7 +37,7 @@ fun CatalogScreen(onInstalled: () -> Unit) {
         val resp = withContext(Dispatchers.IO) {
             bridgeGet(context, "/assistant/catalog") }
         fun parseArr(arr: JSONArray?) = arr?.let {
-            (0 until it.length()).map { i -> CatalogItem(it.getJSONObject(i)) }
+            (0 until it.length()).map { i -> CatalogItem.from(it.getJSONObject(i)) }
         } ?: emptyList()
         pinned = parseArr(resp?.optJSONArray("pinned"))
         scenes = resp?.optJSONArray("scenes")?.let { sarr ->
@@ -175,15 +177,10 @@ private fun InstallDialog(item: CatalogItem, onDismiss: () -> Unit,
                             singleLine = true)
                     }
                     item.consoleUrl?.let { url ->
-                        TextButton(onClick = {
-                            try {
-                                val i = android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(url))
-                                i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                LocalContext.current.startActivity(i)
-                            } catch (_: Exception) {}
-                        }) { Text("去获取 Key →") }
+                        val ctx = LocalContext.current
+                        TextButton(onClick = { openConsoleUrl(ctx, url) }) {
+                            Text("去获取 Key →")
+                        }
                     }
                 }
             }
@@ -196,4 +193,15 @@ private fun InstallDialog(item: CatalogItem, onDismiss: () -> Unit,
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+}
+
+// 打开控制台 URL（普通函数；context 由调用方在 composable 上下文取好）
+private fun openConsoleUrl(context: android.content.Context, url: String) {
+    try {
+        val i = android.content.Intent(android.content.Intent.ACTION_VIEW,
+            android.net.Uri.parse(url))
+        i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(i)
+    } catch (_: Exception) {
+    }
 }

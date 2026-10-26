@@ -111,7 +111,7 @@ check(r.get("ok") is False, "重复删除报 unknown")
 TEST_TOKEN = os.urandom(24).hex()
 proc = subprocess.Popen(
     [sys.executable, "-m", "uvicorn", "forge_bridge:app",
-     "--host", "127.0.0.1", "--port", "8311", "--app-dir", BRIDGE_DIR],
+     "--host", "127.0.0.1", "--port", "8450", "--app-dir", BRIDGE_DIR],
     env={**os.environ, "FORGE_BRIDGE_TOKEN": TEST_TOKEN},
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 try:
@@ -119,7 +119,7 @@ try:
     for _ in range(40):
         time.sleep(0.5)
         try:
-            urllib.request.urlopen("http://127.0.0.1:8311/health", timeout=2)
+            urllib.request.urlopen("http://127.0.0.1:8450/health", timeout=2)
             up = True
             break
         except Exception:
@@ -131,7 +131,7 @@ try:
         _BEARER = "Bearer" + " "
         def post(path, obj):
             req = urllib.request.Request(
-                "http://127.0.0.1:8311" + path,
+                "http://127.0.0.1:8450" + path,
                 data=json.dumps(obj).encode(),
                 headers={"Content-Type": "application/json",
                          _AUTH_KEY: _BEARER + TEST_TOKEN}, method="POST")
@@ -139,7 +139,7 @@ try:
         r2 = post("/assistant/connectors",
                   {"name": "echo", "command": [sys.executable, str(server_py)]})
         check(r2.get("ok") is True, "HTTP upsert（含自动启动）")
-        req = urllib.request.Request("http://127.0.0.1:8311/assistant/connectors",
+        req = urllib.request.Request("http://127.0.0.1:8450/assistant/connectors",
                                      headers={_AUTH_KEY: _BEARER + TEST_TOKEN})
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read())

@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit
 fun AssistantScreen(onAsk: (String) -> Unit, onOpenCatalog: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var connectors by remember { mutableStateOf listOf<ConnectorSnap>() }
+    var connectors by remember { mutableStateOf(listOf<ConnectorSnap>()) }
     var loading by remember { mutableStateOf(true) }
     var showAdd by remember { mutableStateOf(false) }
 
@@ -85,7 +85,7 @@ fun AssistantScreen(onAsk: (String) -> Unit, onOpenCatalog: () -> Unit = {}) {
                                     withContext(Dispatchers.IO) {
                                         bridgePost(context, "/assistant/connectors",
                                             JSONObject().put("name", c.name)
-                                                .put("command", JSONArray(c.command))
+                                                .put("command", JSONArray().apply { c.command.forEach { put(it) } })
                                                 .put("enabled", enabled))
                                     }
                                     refresh()
@@ -250,7 +250,7 @@ private val client = OkHttpClient.Builder()
     .readTimeout(35, TimeUnit.SECONDS)
     .build()
 
-private fun bridgeGet(context: Context, path: String): JSONObject? = runCatching {
+internal fun bridgeGet(context: Context, path: String): JSONObject? = runCatching {
     val req = Request.Builder()
         .url("http://127.0.0.1:8000$path")
         .header("Authorization", "Bearer " + BridgeToken.get(context))
