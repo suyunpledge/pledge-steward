@@ -44,7 +44,7 @@ for p in (HOME, WORKSPACE, HOME / "sessions"):
     p.mkdir(parents=True, exist_ok=True)
 
 BOOT_T = time.time()
-app = FastAPI(title="forge-bridge", version="0.2.0")
+app = FastAPI(title="forge-bridge", version="0.3.0")
 TOKEN = os.environ.get('FORGE_BRIDGE_TOKEN', '')
 
 
@@ -356,3 +356,16 @@ async def health():
 @app.post("/remote/{path:path}")
 async def remote_stub(path: str):
     raise HTTPException(501, "remote control reserved; not in v0.2")
+
+
+# ── v0.3 个人助理模式：MCP 连接器管理 + 助理问答（失败不阻塞桥本体）──
+try:
+    import assistant_mode
+    assistant_mode.register_routes(app)
+except Exception:  # noqa: BLE001
+    pass
+try:
+    import mcp_connectors as _mc
+    _mc.ensure_all(start_enabled=True)
+except Exception:  # noqa: BLE001
+    pass

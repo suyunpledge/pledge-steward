@@ -17,6 +17,10 @@ import kotlinx.coroutines.launch
 import com.forge.android.bridge.Events
 import androidx.compose.ui.unit.dp
 import com.forge.android.bridge.AgentBridgeService
+import com.forge.android.ui.CatalogScreen
+import com.forge.android.ui.AssistantScreen
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBar
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
 
@@ -89,12 +93,36 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun App() {
+        var tab by remember { mutableIntStateOf(0) }   // 0 对话 / 1 助理 / 2 目录
         MaterialTheme {
             Column(Modifier.fillMaxSize()) {
                 StatusStrip()
-                PermissionBar()
-                MessageList(Modifier.weight(1f))
-                InputBar(onSend = { send(it) })
+                when (tab) {
+                    0 -> MessageList(Modifier.weight(1f))
+                    1 -> Box(Modifier.weight(1f)) {
+                        AssistantScreen(onAsk = { text ->
+                            append(ChatItem("user", text))
+                            val payload = JSONObject()
+                                .put("type", "run")
+                                .put("session", "assistant-default")
+                                .put("task", text)
+                            AgentBridgeService.send(this@MainActivity, payload.toString())
+                            tab = 0
+                        }, onOpenCatalog = { tab = 2 })
+                    }
+                    else -> Box(Modifier.weight(1f)) {
+                        CatalogScreen(onInstalled = { tab = 1 })
+                    }
+                }
+                NavigationBar {
+                    NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
+                        icon = { Text("💬") }, label = { Text("对话") })
+                    NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
+                        icon = { Text("🤝") }, label = { Text("助理") })
+                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
+                        icon = { Text("🧩") }, label = { Text("目录") })
+                }
+                if (tab == 0) InputBar(onSend = { send(it) })
             }
         }
     }
@@ -114,15 +142,6 @@ class MainActivity : ComponentActivity() {
                     })
                 AssistChip(onClick = {}, label = { Text("Shizuku: $shizuku") })
             }
-        }
-    }
-
-    @Composable
-    private fun PermissionBar() {
-        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceEvenly) {
-            TextButton(onClick={startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))}) { Text("无障碍") }
-            TextButton(onClick={startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,android.net.Uri.parse("package:$packageName")))}) { Text("操作确认权限") }
-            TextButton(onClick={startService(android.content.Intent(this@MainActivity,AgentBridgeService::class.java).setAction(AgentBridgeService.ACTION_SHIZUKU))}) { Text("Shizuku 授权") }
         }
     }
 
@@ -160,12 +179,11 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun EmptyState() {
-        val bridge by bridgeState.collectAsState()
         Column(Modifier.fillMaxWidth().padding(32.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("forge · Android", style = MaterialTheme.typography.titleLarge)
             Text(
-                if (bridge == "ready") "桥已就绪，输入任务开始。"
+                if (bridgeState.value == "ready") "桥已就绪，输入任务开始。"
                 else "首次启动在解包 Linux 环境并拉起 Python Agent（约 1-2 分钟）…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -174,9 +192,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun InputBar(onSend: (String) -> Unit) {
-        val bridge by bridgeState.collectAsState()
-        val busy by running.collectAsState()
-        var text by rememberSaveable { mutableStateOf("") }
+        var text by remember { mutableStateOf("") }
         Surface(tonalElevation = 4.dp) {
             Row(Modifier.fillMaxWidth().padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -186,9 +202,8 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("给 Agent 派任务…") },
                     maxLines = 4)
-                if(busy) TextButton(onClick = { AgentBridgeService.send(this@MainActivity, "{\"type\":\"cancel\"}") }) { Text("取消") }
                 Button(onClick = { onSend(text); text = "" },
-                    enabled = text.isNotBlank() && bridge == "ready" && !busy) {
+                    enabled = text.isNotBlank() && bridgeState.value == "ready" && !running.value) {
                     Text("发送")
                 }
             }
