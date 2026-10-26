@@ -15,6 +15,7 @@ CATALOG = [
     {
         "id": "amap", "name": "高德地图", "category": "出行", "icon": "🗺️",
         "desc": "地理编码/路线规划/POI 搜索/天气（官方，免费额度）",
+        "scene": "life", "pinned": True,
         "transport": "stdio",
         "command": ["npx", "-y", "@amap/amap-maps-mcp-server"],
         "auth": {"kind": "api_key", "fields": [
@@ -24,6 +25,7 @@ CATALOG = [
     {
         "id": "baidu_maps", "name": "百度地图", "category": "出行", "icon": "🗺️",
         "desc": "定位/路线/天气/地点搜索（官方，⭐447）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["npx", "-y", "@baidu-maps/mcp"],
         "auth": {"kind": "api_key", "fields": [
@@ -33,6 +35,7 @@ CATALOG = [
     {
         "id": "qq_maps", "name": "腾讯地图", "category": "出行", "icon": "🗺️",
         "desc": "地理编码/POI/路线/天气（官方远程 MCP）",
+        "scene": "life",
         "transport": "http",
         "url": "https://mcp.map.qq.com/mcp?key={TENCENT_MAPS_KEY}",
         "auth": {"kind": "api_key", "fields": [
@@ -42,6 +45,7 @@ CATALOG = [
     {
         "id": "train12306", "name": "12306 火车票", "category": "出行", "icon": "🚄",
         "desc": "车票查询（社区 ⭐2.3k，零凭据）",
+        "scene": "life", "pinned": True,
         "transport": "stdio",
         "command": ["uvx", "mcp-server-12306"],
         "auth": {"kind": "none", "fields": []},
@@ -49,6 +53,7 @@ CATALOG = [
     {
         "id": "didi", "name": "滴滴出行", "category": "出行", "icon": "🚕",
         "desc": "叫车/估价/行程状态（官方远程，需企业开通）",
+        "scene": "life",
         "transport": "http",
         "url": "https://mcp.didichuxing.com/mcp-servers?key={DIDI_KEY}",
         "auth": {"kind": "api_key", "fields": [
@@ -59,6 +64,7 @@ CATALOG = [
     {
         "id": "feishu", "name": "飞书", "category": "办公", "icon": "🐦",
         "desc": "文档/表格/IM/日历（官方 ⭐838）",
+        "scene": "work", "pinned": True,
         "transport": "stdio",
         "command": ["npx", "-y", "@larksuiteoapi/lark-mcp"],
         "auth": {"kind": "api_key", "fields": [
@@ -69,6 +75,7 @@ CATALOG = [
     {
         "id": "yuque", "name": "语雀", "category": "办公", "icon": "📖",
         "desc": "知识库增删查/搜索/看板（官方 ⭐248）",
+        "scene": "work",
         "transport": "stdio",
         "command": ["npx", "-y", "@yuque/yuque-mcp-server"],
         "auth": {"kind": "api_key", "fields": [
@@ -78,6 +85,7 @@ CATALOG = [
     {
         "id": "tencent_docs", "name": "腾讯文档", "category": "办公", "icon": "📄",
         "desc": "文档/表格/幻灯片读写（官方远程）",
+        "scene": "work",
         "transport": "http",
         "url": "https://docs.qq.com/openapi/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -87,6 +95,7 @@ CATALOG = [
     {
         "id": "wemeet", "name": "腾讯会议", "category": "办公", "icon": "📹",
         "desc": "预约会议/参会人/录制/转写（官方远程）",
+        "scene": "work",
         "transport": "http",
         "url": "https://mcp.meeting.tencent.com/mcp/wemeet-open/v1",
         "auth": {"kind": "api_key", "fields": [
@@ -96,6 +105,7 @@ CATALOG = [
     {
         "id": "wps", "name": "WPS 365", "category": "办公", "icon": "📝",
         "desc": "企业云文档搜索/读取/分享/权限（官方远程）",
+        "scene": "work",
         "transport": "http",
         "url": "https://openapi.wps.cn/mcp/v2/kso-yundoc/message",
         "auth": {"kind": "api_key", "fields": [
@@ -105,6 +115,7 @@ CATALOG = [
     {
         "id": "notion", "name": "Notion", "category": "办公", "icon": "🗒️",
         "desc": "页面/数据库搜索读写（官方远程，含 Notion AI 能力）",
+        "scene": "work", "pinned": True,
         "transport": "http",
         "url": "https://mcp.notion.com/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -115,6 +126,7 @@ CATALOG = [
     {
         "id": "qichacha", "name": "企查查", "category": "企业", "icon": "🏢",
         "desc": "工商/风险/知产/司法/招投标（官方远程×10，按次计费）",
+        "scene": "global",
         "transport": "http",
         "url": "https://agent.qcc.com/mcp/company/stream",
         "auth": {"kind": "api_key", "fields": [
@@ -124,6 +136,7 @@ CATALOG = [
     {
         "id": "tianyancha", "name": "天眼查", "category": "企业", "icon": "🏢",
         "desc": "工商/股东/风险/诉讼（官方远程，OAuth）",
+        "scene": "global",
         "transport": "http",
         "url": "https://mcp.tianyancha.com/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -134,6 +147,7 @@ CATALOG = [
     {
         "id": "xiaohongshu", "name": "小红书", "category": "内容", "icon": "📕",
         "desc": "读/搜索/发布笔记（社区 ⭐16.2k，需扫码 Cookie）",
+        "scene": "life", "pinned": True,
         "transport": "stdio",
         "command": ["uvx", "xiaohongshu-mcp"],
         "auth": {"kind": "api_key", "fields": [
@@ -143,6 +157,7 @@ CATALOG = [
     {
         "id": "bilibili", "name": "Bilibili", "category": "内容", "icon": "📺",
         "desc": "视频搜索/信息（社区）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["npx", "-y", "bilibili-mcp-js"],
         "auth": {"kind": "api_key", "fields": [
@@ -152,6 +167,7 @@ CATALOG = [
     {
         "id": "weibo", "name": "微博", "category": "内容", "icon": "🌊",
         "desc": "用户/内容/热搜（社区）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["uvx", "mcp-server-weibo"],
         "auth": {"kind": "api_key", "fields": [
@@ -161,6 +177,7 @@ CATALOG = [
     {
         "id": "weread", "name": "微信读书", "category": "内容", "icon": "📚",
         "desc": "书架/笔记/划线（社区 ⭐579）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["uvx", "mcp-server-weread"],
         "auth": {"kind": "api_key", "fields": [
@@ -168,37 +185,11 @@ CATALOG = [
             "console_url": "https://weread.qq.com/"},
     },
     # ── 搜索与 AI ─────────────────────────────────────────
-    {
-        "id": "bocha", "name": "博查 AI 搜索", "category": "搜索", "icon": "🔍",
-        "desc": "中文网页/新闻/图片搜索（官方 ⭐185，给 Agent 实时信源）",
-        "transport": "stdio",
-        "command": ["npx", "-y", "bocha-search-mcp"],
-        "auth": {"kind": "api_key", "fields": [
-            {"env": "BOCHA_API_KEY", "label": "博查 API Key"}],
-            "console_url": "https://open.bochaai.com/"},
-    },
-    {
-        "id": "zhipu_search", "name": "智谱 Web 搜索", "category": "搜索", "icon": "🧠",
-        "desc": "Web 搜索/网页阅读/Zread（官方远程，GLM Coding Plan key）",
-        "transport": "http",
-        "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
-        "auth": {"kind": "api_key", "fields": [
-            {"env": "AUTH_TOKEN", "label": "智谱 API Key"}],
-            "console_url": "https://open.bigmodel.cn/usercenter/apikeys"},
-    },
-    {
-        "id": "tencent_websearch", "name": "腾讯 Web 搜索", "category": "搜索", "icon": "🔍",
-        "desc": "网页搜索（官方）",
-        "transport": "stdio",
-        "command": ["npx", "-y", "@tencent/websearch-mcp"],
-        "auth": {"kind": "api_key", "fields": [
-            {"env": "TENCENT_SEARCH_KEY", "label": "腾讯搜索 Key"}],
-            "console_url": "https://github.com/Tencent/WebSearchMCP"},
-    },
     # ── 金融 ─────────────────────────────────────────
     {
         "id": "akshare", "name": "A股行情 (AKShare)", "category": "金融", "icon": "📈",
         "desc": "A股/加密/宏观数据（社区 ⭐390，免费）",
+        "scene": "global",
         "transport": "stdio",
         "command": ["uvx", "mcp-aktools"],
         "auth": {"kind": "none", "fields": []},
@@ -206,6 +197,7 @@ CATALOG = [
     {
         "id": "xuangubao", "name": "选股宝", "category": "金融", "icon": "📊",
         "desc": "大涨股板块+原因/全球财经全文（官方远程）",
+        "scene": "global",
         "transport": "http",
         "url": "https://xgb-mcp-api.xuangubao.cn/mcp",
         "auth": {"kind": "api_key", "fields": [
@@ -216,6 +208,7 @@ CATALOG = [
     {
         "id": "taobao", "name": "淘宝比价", "category": "电商", "icon": "🛒",
         "desc": "淘宝/天猫/京东商品数据与比价（社区）",
+        "scene": "life", "pinned": True,
         "transport": "stdio",
         "command": ["npx", "-y", "taobaoscraper-mcp"],
         "auth": {"kind": "none", "fields": []},
@@ -223,6 +216,7 @@ CATALOG = [
     {
         "id": "jd_deals", "name": "京东超级秒杀", "category": "电商", "icon": "🛍️",
         "desc": "京东优惠/秒杀信息（社区）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["npx", "-y", "mcp-jd-super-deals"],
         "auth": {"kind": "none", "fields": []},
@@ -230,6 +224,7 @@ CATALOG = [
     {
         "id": "xianyu", "name": "闲鱼", "category": "电商", "icon": "🐟",
         "desc": "闲鱼发布/管理/IM（社区，需 Cookie）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["uvx", "xianyu-buyer-mcp"],
         "auth": {"kind": "api_key", "fields": [
@@ -240,6 +235,7 @@ CATALOG = [
     {
         "id": "luckin", "name": "瑞幸咖啡", "category": "生活", "icon": "☕",
         "desc": "附近门店/点单（官方远程，开放平台）",
+        "scene": "life",
         "transport": "http",
         "url": "https://gwmcp.lkcoffee.com/order/user/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -249,6 +245,7 @@ CATALOG = [
     {
         "id": "mcd", "name": "麦当劳", "category": "生活", "icon": "🍔",
         "desc": "营养/附近门店/菜单（官方远程）",
+        "scene": "life",
         "transport": "http",
         "url": "https://mcp.mcd.cn",
         "auth": {"kind": "oauth", "fields": [
@@ -258,6 +255,7 @@ CATALOG = [
     {
         "id": "kuaidi100", "name": "快递100", "category": "生活", "icon": "📦",
         "desc": "全快递商包裹轨迹查询（官方，只读，企业账号）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["uvx", "kuaidi100-mcp"],
         "auth": {"kind": "api_key", "fields": [
@@ -269,6 +267,7 @@ CATALOG = [
     {
         "id": "github", "name": "GitHub", "category": "开发", "icon": "🐙",
         "desc": "仓库/Issue/PR/Actions（官方远程）",
+        "scene": "work", "pinned": True,
         "transport": "http",
         "url": "https://api.githubcopilot.com/mcp/",
         "auth": {"kind": "api_key", "fields": [
@@ -278,6 +277,7 @@ CATALOG = [
     {
         "id": "gitee", "name": "Gitee", "category": "开发", "icon": "🐢",
         "desc": "仓库/Issue/PR（官方 ⭐66）",
+        "scene": "dev",
         "transport": "stdio",
         "command": ["uvx", "mcp-gitee"],
         "auth": {"kind": "api_key", "fields": [
@@ -290,6 +290,7 @@ CATALOG = [
     {
         "id": "slack", "name": "Slack", "category": "国际·协作", "icon": "💬",
         "desc": "频道/消息/文件搜索、发帖、画布（官方远程 mcp.slack.com）",
+        "scene": "work",
         "transport": "http",
         "url": "https://mcp.slack.com/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -299,6 +300,7 @@ CATALOG = [
     {
         "id": "linear", "name": "Linear", "category": "国际·协作", "icon": "📐",
         "desc": "Issue/项目/周期管理（官方远程 mcp.linear.app）",
+        "scene": "work",
         "transport": "http",
         "url": "https://mcp.linear.app/sse",
         "auth": {"kind": "api_key", "fields": [
@@ -308,6 +310,7 @@ CATALOG = [
     {
         "id": "atlassian", "name": "Atlassian (Jira/Confluence)", "category": "国际·协作", "icon": "🧭",
         "desc": "Jira issue + Confluence 页面（官方远程，Rovo MCP）",
+        "scene": "work",
         "transport": "http",
         "url": "https://mcp.atlassian.com/v1/sse",
         "auth": {"kind": "oauth", "fields": [
@@ -317,6 +320,7 @@ CATALOG = [
     {
         "id": "airtable", "name": "Airtable", "category": "国际·协作", "icon": "🗃️",
         "desc": "Base/记录读写（官方远程）",
+        "scene": "work",
         "transport": "http",
         "url": "https://mcp.airtable.com/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -327,6 +331,7 @@ CATALOG = [
     {
         "id": "stripe", "name": "Stripe", "category": "国际·商务", "icon": "💳",
         "desc": "支付/客户/发票/订阅（官方远程 mcp.stripe.com）",
+        "scene": "global",
         "transport": "http",
         "url": "https://mcp.stripe.com/mcp",
         "auth": {"kind": "api_key", "fields": [
@@ -336,6 +341,7 @@ CATALOG = [
     {
         "id": "paypal", "name": "PayPal", "category": "国际·商务", "icon": "🅿️",
         "desc": "支付/订单/退款（官方 MCP）",
+        "scene": "global",
         "transport": "stdio",
         "command": ["npx", "-y", "@paypal/paypal-mcp-server"],
         "auth": {"kind": "api_key", "fields": [
@@ -346,6 +352,7 @@ CATALOG = [
     {
         "id": "zapier", "name": "Zapier", "category": "国际·商务", "icon": "⚡",
         "desc": "8000+ 应用自动化（官方远程，NLA）",
+        "scene": "global",
         "transport": "http",
         "url": "https://mcp.zapier.com/api/mcp/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -356,6 +363,7 @@ CATALOG = [
     {
         "id": "cloudflare", "name": "Cloudflare", "category": "国际·开发", "icon": "☁️",
         "desc": "Workers/KV/R2/DNS/CDN 管理（官方远程，12 个端点）",
+        "scene": "dev",
         "transport": "http",
         "url": "https://docs.mcp.cloudflare.com/sse",
         "auth": {"kind": "api_key", "fields": [
@@ -365,6 +373,7 @@ CATALOG = [
     {
         "id": "vercel", "name": "Vercel", "category": "国际·开发", "icon": "▲",
         "desc": "部署/项目/域名管理（官方远程）",
+        "scene": "dev",
         "transport": "http",
         "url": "https://mcp.vercel.com/sse",
         "auth": {"kind": "oauth", "fields": [
@@ -374,6 +383,7 @@ CATALOG = [
     {
         "id": "docker", "name": "Docker", "category": "国际·开发", "icon": "🐳",
         "desc": "镜像构建/仓库管理（官方 mcp.docker.com）",
+        "scene": "dev",
         "transport": "http",
         "url": "https://mcp.docker.com/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -383,6 +393,7 @@ CATALOG = [
     {
         "id": "supabase", "name": "Supabase", "category": "国际·开发", "icon": "🟩",
         "desc": "数据库/认证/存储管理（官方远程）",
+        "scene": "dev",
         "transport": "http",
         "url": "https://mcp.supabase.com/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -392,6 +403,7 @@ CATALOG = [
     {
         "id": "playwright", "name": "Playwright 浏览器", "category": "国际·开发", "icon": "🎭",
         "desc": "真实浏览器自动化（微软官方，stdio）",
+        "scene": "dev",
         "transport": "stdio",
         "command": ["npx", "-y", "@playwright/mcp@latest"],
         "auth": {"kind": "none", "fields": []},
@@ -399,6 +411,7 @@ CATALOG = [
     {
         "id": "context7", "name": "Context7 文档", "category": "国际·开发", "icon": "📚",
         "desc": "任意库的最新文档查询（Upstash，免 Key）",
+        "scene": "dev",
         "transport": "stdio",
         "command": ["npx", "-y", "@upstash/context7-mcp"],
         "auth": {"kind": "none", "fields": []},
@@ -406,6 +419,7 @@ CATALOG = [
     {
         "id": "firecrawl", "name": "Firecrawl 网页抓取", "category": "国际·开发", "icon": "🔥",
         "desc": "任意网站→结构化 Markdown（官方，需 Key）",
+        "scene": "dev",
         "transport": "stdio",
         "command": ["npx", "-y", "firecrawl-mcp"],
         "auth": {"kind": "api_key", "fields": [
@@ -416,6 +430,7 @@ CATALOG = [
     {
         "id": "spotify", "name": "Spotify", "category": "国际·内容", "icon": "🎵",
         "desc": "播放控制/歌单/搜索（官方远程 developer.spotify.com）",
+        "scene": "life",
         "transport": "http",
         "url": "https://developer.spotify.com/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -425,6 +440,7 @@ CATALOG = [
     {
         "id": "airbnb", "name": "Airbnb", "category": "国际·内容", "icon": "🏠",
         "desc": "房源搜索/详情/价格（openbnb 社区，免 Key）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["npx", "-y", "@openbnb/mcp-server-airbnb"],
         "auth": {"kind": "none", "fields": []},
@@ -432,6 +448,7 @@ CATALOG = [
     {
         "id": "figma", "name": "Figma", "category": "国际·内容", "icon": "🎨",
         "desc": "设计稿→代码（官方 Dev Mode MCP）",
+        "scene": "work",
         "transport": "stdio",
         "command": ["npx", "-y", "figma-developer-mcp", "--stdio"],
         "auth": {"kind": "api_key", "fields": [
@@ -441,6 +458,7 @@ CATALOG = [
     {
         "id": "zoom", "name": "Zoom", "category": "国际·内容", "icon": "🎥",
         "desc": "会议/日程/团队聊天（官方 Marketplace 应用）",
+        "scene": "work",
         "transport": "http",
         "url": "https://mcp.zoom.us/mcp",
         "auth": {"kind": "oauth", "fields": [
@@ -449,26 +467,9 @@ CATALOG = [
     },
     # ── 美国/国际：AI 与搜索 ─────────────────────────────
     {
-        "id": "brave_search", "name": "Brave 搜索", "category": "国际·搜索", "icon": "🦁",
-        "desc": "网页/图片/新闻搜索（官方，免费额度）",
-        "transport": "stdio",
-        "command": ["npx", "-y", "@brave/brave-search-mcp-server"],
-        "auth": {"kind": "api_key", "fields": [
-            {"env": "BRAVE_API_KEY", "label": "Brave API Key"}],
-            "console_url": "https://api.search.brave.com/"},
-    },
-    {
-        "id": "exa", "name": "Exa AI 搜索", "category": "国际·搜索", "icon": "🔎",
-        "desc": "语义搜索/深度研究（官方，免费额度）",
-        "transport": "stdio",
-        "command": ["npx", "-y", "exa-mcp-server"],
-        "auth": {"kind": "api_key", "fields": [
-            {"env": "EXA_API_KEY", "label": "Exa API Key"}],
-            "console_url": "https://dashboard.exa.ai/"},
-    },
-    {
         "id": "caiyun", "name": "彩云天气", "category": "工具", "icon": "🌦️",
         "desc": "分钟级降水预报（官方，免费额度）",
+        "scene": "life",
         "transport": "stdio",
         "command": ["uvx", "mcp-caiyun-weather"],
         "auth": {"kind": "api_key", "fields": [
@@ -478,6 +479,7 @@ CATALOG = [
     {
         "id": "textin", "name": "TextIn 文档解析", "category": "工具", "icon": "📑",
         "desc": "PDF/图片→Markdown，保留表格与版式（合合信息官方）",
+        "scene": "global",
         "transport": "stdio",
         "command": ["npx", "-y", "@intsig-textin/textin-mcp"],
         "auth": {"kind": "api_key", "fields": [
@@ -492,3 +494,22 @@ def by_id(cid: str):
         if item["id"] == cid:
             return item
     return None
+
+
+SCENES = [
+    ("work", "办公协作", "工作场景：文档/会议/项目/开发"),
+    ("life", "生活日常", "出行/购物/内容/美食"),
+    ("dev", "开发运维", "代码/部署/自动化"),
+    ("global", "专业服务", "企业信息/金融/支付/工具"),
+]
+
+
+def grouped() -> dict:
+    """目录的分组视图：pinned 置顶数组 + scene 分组（供 UI 折叠渲染）。"""
+    pinned = [c for c in CATALOG if c.get("pinned")]
+    groups = []
+    for key, label, desc in SCENES:
+        items = [c for c in CATALOG if c.get("scene") == key and not c.get("pinned")]
+        if items:
+            groups.append({"key": key, "label": label, "desc": desc, "items": items})
+    return {"pinned": pinned, "scenes": groups}

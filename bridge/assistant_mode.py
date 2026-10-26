@@ -47,10 +47,19 @@ class CatalogInstallBody(BaseModel):
     credentials: dict[str, str] = {}
 
 
+# 内置联网搜索（v0.4：搜索服务不再走连接器——Agent 直接可用）
+try:
+    from web_search_tools import WEB_SEARCH_TOOL
+    _BUILTIN_ASSISTANT_TOOLS = [WEB_SEARCH_TOOL]
+except Exception:                            # noqa: BLE001 — 缺依赖不阻塞
+    _BUILTIN_ASSISTANT_TOOLS = []
+
+
 ASSISTANT_SYSTEM_HINT = (
     "【个人助理模式】用户在手机上与你对话。优先使用可用的连接器工具"
     "（日历/笔记/外部应用）完成任务；设备操作只读为主。回答简短、"
-    "适合手机屏幕阅读。"
+    "适合手机屏幕阅读。你内置了 web_search 工具——联网搜索直接调用，"
+    "不需要任何连接器。"
 )
 
 
@@ -59,14 +68,15 @@ def register_routes(app) -> None:
 
     @app.get("/assistant/catalog")
     def catalog_list():
-        """预置连接器目录（一键接入的数据源）。
+        """预置连接器目录（分组视图）。
 
-        Kotlin 渲染成目录页：分类分组 + 搜索；用户点某个服务 → 表单
-        （按 auth.kind 渲染字段，console_url 做「去获取 Key」按钮）→
-        提交回 POST /assistant/connectors 即完成接入。
+        结构：pinned（常用置顶，用户列举的核心服务）+ scenes[]（
+        场景分组：办公协作/生活日常/开发运维/专业服务——UI 折叠渲染）。
+        平铺 catalog 字段保留（兼容）。
         """
-        from connector_catalog import CATALOG
-        return {"catalog": CATALOG}
+        from connector_catalog import CATALOG, grouped
+        g = grouped()
+        return {"pinned": g["pinned"], "scenes": g["scenes"], "catalog": CATALOG}
 
     @app.post("/assistant/catalog/install")
     def catalog_install(body: "CatalogInstallBody"):

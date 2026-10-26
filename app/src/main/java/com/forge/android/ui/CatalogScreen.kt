@@ -16,27 +16,35 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * CatalogScreen — 连接器目录页（一键接入）。
+ * CatalogScreen — 连接器目录页（场景分组 + 折叠 + 置顶）。
  *
- * 列表按分类分组，卡片显示图标/名称/描述/凭据需求；
- * 点击卡片 → 授权表单（按 auth.kind 渲染：none 直接装；api_key 填
- * Key（带「去获取」console 跳转）；oauth 填 Token）→ POST install。
+ * 结构：常用（pinned，用户点名的核心服务直列）+
+ * 场景分组（办公协作/生活日常/开发运维/专业服务，默认折叠，点标题展开）。
+ * 联网搜索已内置进 Agent（web_search 工具），不在目录占位。
  */
 @Composable
 fun CatalogScreen(onInstalled: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var items by remember { mutableStateOf(listOf<CatalogItem>()) }
+    var pinned by remember { mutableStateOf(listOf<CatalogItem>()) }
+    var scenes by remember { mutableStateOf(listOf<SceneGroup>()) }
     var loading by remember { mutableStateOf(true) }
     var selected by remember { mutableStateOf<CatalogItem?>(null) }
 
     LaunchedEffect(Unit) {
-        items = withContext(Dispatchers.IO) {
-            bridgeGet(context, "/assistant/catalog")
-                ?.optJSONArray("catalog")?.let { arr ->
-                    (0 until arr.length()).map { CatalogItem(arr.getJSONObject(it)) }
-                } ?: emptyList()
-        }
+        val resp = withContext(Dispatchers.IO) {
+            bridgeGet(context, "/assistant/catalog") }
+        fun parseArr(arr: JSONArray?) = arr?.let {
+            (0 until it.length()).map { i -> CatalogItem(it.getJSONObject(i)) }
+        } ?: emptyList()
+        pinned = parseArr(resp?.optJSONArray("pinned"))
+        scenes = resp?.optJSONArray("scenes")?.let { sarr ->
+            (0 until sarr.length()).map { i ->
+                val g = sarr.getJSONObject(i)
+                SceneGroup(g.optString("key"), g.optString("label"),
+                    g.optString("desc"), parseArr(g.optJSONArray("items")))
+            }
+        } ?: emptyList()
         loading = false
     }
 
@@ -62,25 +70,54 @@ fun CatalogScreen(onInstalled: () -> Unit) {
                 CircularProgressIndicator(Modifier.padding(32.dp))
             }
         } else {
-            val grouped = items.groupBy { it.category }
+            // 每组独立折叠态（rememberSaveable 滚动重建不丢）
+            val expandedStates = rememberSaveable {
+                mutableStateMapOf<String, Boolean>()
+            }
             LazyColumn(Modifier.padding(pad).padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                grouped.forEach { (cat, list) ->
-                    item { Text(cat, style = MaterialTheme.typography.titleSmall,
+                if (pinned.isNotEmpty()) {
+                    item { Text("★ 常用", style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(top = 12.dp)) }
-                    items(list) { it2 ->
-                        CatalogCard(it2) { selected = it2 }
+                    items(pinned) { CatalogCard(it) { selected = it } }
+                }
+                scenes.forEach { sg ->
+                    item(key = "hdr-${sg.key}") {
+                        val expanded = expandedStates[sg.key] ?: false
+                        Row(Modifier.fillMaxWidth()
+                            .clickable { expandedStates[sg.key] = !expanded }
+                            .padding(vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(if (expanded) "▾" else "▸",
+                                style = MaterialTheme.typography.titleSmall)
+                            Column {
+                                Text("${sg.label} · ${sg.items.size}",
+                                    style = MaterialTheme.typography.titleSmall)
+                                Text(sg.desc,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    if (expandedStates[sg.key] == true) {
+                        items(sg.items, key = { it.id }) {
+                            CatalogCard(it) { selected = it }
+                        }
                     }
                 }
+                item { Spacer(Modifier.height(20.dp)) }
             }
         }
     }
 }
 
+data class SceneGroup(val key: String, val label: String, val desc: String,
+                      val items: List<CatalogItem>)
+
 data class CatalogItem(
     val id: String, val name: String, val category: String, val icon: String,
     val desc: String, val authKind: String,
-    val fields: List<Pair<String, String>>,   // env → label
+    val fields: List<Pair<String, String>>,
     val consoleUrl: String?) {
     companion object {
         fun from(o: JSONObject) = CatalogItem(
@@ -139,7 +176,6 @@ private fun InstallDialog(item: CatalogItem, onDismiss: () -> Unit,
                     }
                     item.consoleUrl?.let { url ->
                         TextButton(onClick = {
-                            // 打开控制台取 Key（系统浏览器）
                             try {
                                 val i = android.content.Intent(
                                     android.content.Intent.ACTION_VIEW,
