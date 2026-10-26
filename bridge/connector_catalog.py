@@ -285,6 +285,187 @@ CATALOG = [
             "console_url": "https://gitee.com/profile/personal_access_tokens"},
     },
     # ── 天气与工具 ─────────────────────────────────────────
+
+    # ── 美国/国际：协作与项目管理 ─────────────────────────
+    {
+        "id": "slack", "name": "Slack", "category": "国际·协作", "icon": "💬",
+        "desc": "频道/消息/文件搜索、发帖、画布（官方远程 mcp.slack.com）",
+        "transport": "http",
+        "url": "https://mcp.slack.com/mcp",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Slack OAuth Token"}],
+            "console_url": "https://api.slack.com/apps"},
+    },
+    {
+        "id": "linear", "name": "Linear", "category": "国际·协作", "icon": "📐",
+        "desc": "Issue/项目/周期管理（官方远程 mcp.linear.app）",
+        "transport": "http",
+        "url": "https://mcp.linear.app/sse",
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Linear API Key"}],
+            "console_url": "https://linear.app/settings/api"},
+    },
+    {
+        "id": "atlassian", "name": "Atlassian (Jira/Confluence)", "category": "国际·协作", "icon": "🧭",
+        "desc": "Jira issue + Confluence 页面（官方远程，Rovo MCP）",
+        "transport": "http",
+        "url": "https://mcp.atlassian.com/v1/sse",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Atlassian OAuth"}],
+            "console_url": "https://www.atlassian.com/platform/rovo-mcp"},
+    },
+    {
+        "id": "airtable", "name": "Airtable", "category": "国际·协作", "icon": "🗃️",
+        "desc": "Base/记录读写（官方远程）",
+        "transport": "http",
+        "url": "https://mcp.airtable.com/mcp",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Airtable PAT"}],
+            "console_url": "https://airtable.com/create/tokens"},
+    },
+    # ── 美国/国际：支付与商务 ─────────────────────────────
+    {
+        "id": "stripe", "name": "Stripe", "category": "国际·商务", "icon": "💳",
+        "desc": "支付/客户/发票/订阅（官方远程 mcp.stripe.com）",
+        "transport": "http",
+        "url": "https://mcp.stripe.com/mcp",
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Stripe Secret Key"}],
+            "console_url": "https://dashboard.stripe.com/apikeys"},
+    },
+    {
+        "id": "paypal", "name": "PayPal", "category": "国际·商务", "icon": "🅿️",
+        "desc": "支付/订单/退款（官方 MCP）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "@paypal/paypal-mcp-server"],
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "PAYPAL_CLIENT_ID", "label": "PayPal Client ID"},
+            {"env": "PAYPAL_SECRET", "label": "PayPal Secret"}],
+            "console_url": "https://developer.paypal.com/dashboard/applications"},
+    },
+    {
+        "id": "zapier", "name": "Zapier", "category": "国际·商务", "icon": "⚡",
+        "desc": "8000+ 应用自动化（官方远程，NLA）",
+        "transport": "http",
+        "url": "https://mcp.zapier.com/api/mcp/mcp",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Zapier MCP Key"}],
+            "console_url": "https://mcp.zapier.com/"},
+    },
+    # ── 美国/国际：云与开发 ──────────────────────────────
+    {
+        "id": "cloudflare", "name": "Cloudflare", "category": "国际·开发", "icon": "☁️",
+        "desc": "Workers/KV/R2/DNS/CDN 管理（官方远程，12 个端点）",
+        "transport": "http",
+        "url": "https://docs.mcp.cloudflare.com/sse",
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Cloudflare API Token"}],
+            "console_url": "https://dash.cloudflare.com/profile/api-tokens"},
+    },
+    {
+        "id": "vercel", "name": "Vercel", "category": "国际·开发", "icon": "▲",
+        "desc": "部署/项目/域名管理（官方远程）",
+        "transport": "http",
+        "url": "https://mcp.vercel.com/sse",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Vercel Token"}],
+            "console_url": "https://vercel.com/account/tokens"},
+    },
+    {
+        "id": "docker", "name": "Docker", "category": "国际·开发", "icon": "🐳",
+        "desc": "镜像构建/仓库管理（官方 mcp.docker.com）",
+        "transport": "http",
+        "url": "https://mcp.docker.com/mcp",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Docker PAT"}],
+            "console_url": "https://hub.docker.com/settings/personal-access-tokens"},
+    },
+    {
+        "id": "supabase", "name": "Supabase", "category": "国际·开发", "icon": "🟩",
+        "desc": "数据库/认证/存储管理（官方远程）",
+        "transport": "http",
+        "url": "https://mcp.supabase.com/mcp",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Supabase PAT"}],
+            "console_url": "https://supabase.com/dashboard/account/tokens"},
+    },
+    {
+        "id": "playwright", "name": "Playwright 浏览器", "category": "国际·开发", "icon": "🎭",
+        "desc": "真实浏览器自动化（微软官方，stdio）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "@playwright/mcp@latest"],
+        "auth": {"kind": "none", "fields": []},
+    },
+    {
+        "id": "context7", "name": "Context7 文档", "category": "国际·开发", "icon": "📚",
+        "desc": "任意库的最新文档查询（Upstash，免 Key）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "@upstash/context7-mcp"],
+        "auth": {"kind": "none", "fields": []},
+    },
+    {
+        "id": "firecrawl", "name": "Firecrawl 网页抓取", "category": "国际·开发", "icon": "🔥",
+        "desc": "任意网站→结构化 Markdown（官方，需 Key）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "firecrawl-mcp"],
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "FIRECRAWL_API_KEY", "label": "Firecrawl API Key"}],
+            "console_url": "https://firecrawl.dev/"},
+    },
+    # ── 美国/国际：内容与生活 ─────────────────────────────
+    {
+        "id": "spotify", "name": "Spotify", "category": "国际·内容", "icon": "🎵",
+        "desc": "播放控制/歌单/搜索（官方远程 developer.spotify.com）",
+        "transport": "http",
+        "url": "https://developer.spotify.com/mcp",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Spotify OAuth Token"}],
+            "console_url": "https://developer.spotify.com/documentation/mcp"},
+    },
+    {
+        "id": "airbnb", "name": "Airbnb", "category": "国际·内容", "icon": "🏠",
+        "desc": "房源搜索/详情/价格（openbnb 社区，免 Key）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "@openbnb/mcp-server-airbnb"],
+        "auth": {"kind": "none", "fields": []},
+    },
+    {
+        "id": "figma", "name": "Figma", "category": "国际·内容", "icon": "🎨",
+        "desc": "设计稿→代码（官方 Dev Mode MCP）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "figma-developer-mcp", "--stdio"],
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "FIGMA_API_KEY", "label": "Figma PAT"}],
+            "console_url": "https://www.figma.com/developers/api"},
+    },
+    {
+        "id": "zoom", "name": "Zoom", "category": "国际·内容", "icon": "🎥",
+        "desc": "会议/日程/团队聊天（官方 Marketplace 应用）",
+        "transport": "http",
+        "url": "https://mcp.zoom.us/mcp",
+        "auth": {"kind": "oauth", "fields": [
+            {"env": "AUTH_TOKEN", "label": "Zoom OAuth"}],
+            "console_url": "https://marketplace.zoom.us/"},
+    },
+    # ── 美国/国际：AI 与搜索 ─────────────────────────────
+    {
+        "id": "brave_search", "name": "Brave 搜索", "category": "国际·搜索", "icon": "🦁",
+        "desc": "网页/图片/新闻搜索（官方，免费额度）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "@brave/brave-search-mcp-server"],
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "BRAVE_API_KEY", "label": "Brave API Key"}],
+            "console_url": "https://api.search.brave.com/"},
+    },
+    {
+        "id": "exa", "name": "Exa AI 搜索", "category": "国际·搜索", "icon": "🔎",
+        "desc": "语义搜索/深度研究（官方，免费额度）",
+        "transport": "stdio",
+        "command": ["npx", "-y", "exa-mcp-server"],
+        "auth": {"kind": "api_key", "fields": [
+            {"env": "EXA_API_KEY", "label": "Exa API Key"}],
+            "console_url": "https://dashboard.exa.ai/"},
+    },
     {
         "id": "caiyun", "name": "彩云天气", "category": "工具", "icon": "🌦️",
         "desc": "分钟级降水预报（官方，免费额度）",
