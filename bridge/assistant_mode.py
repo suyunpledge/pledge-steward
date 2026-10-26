@@ -27,9 +27,10 @@ import mcp_connectors as mc
 
 class ConnectorBody(BaseModel):
     name: str
-    command: list[str]
+    command: list[str] | None = None
     env: dict[str, str] | None = None
     enabled: bool = True
+    url: str | None = None      # http 型（官方远程 MCP）：与 command 二选一
 
 
 class ConnectorName(BaseModel):
@@ -53,7 +54,8 @@ def register_routes(app) -> None:
 
     @app.post("/assistant/connectors")
     def upsert_connector(body: ConnectorBody):
-        result = mc.upsert(body.name, body.command, body.env, body.enabled)
+        result = mc.upsert(body.name, body.command, body.env, body.enabled,
+                           url=body.url)
         if result.get("ok"):
             ensure = mc.ensure_one(body.name)
             result["connector"] = ensure

@@ -192,16 +192,22 @@ def save_config(cfg: dict[str, dict[str, Any]]) -> None:
                            encoding="utf-8")
 
 
-def upsert(name: str, command: list[str], env: dict[str, str] | None = None,
-           enabled: bool = True) -> dict[str, Any]:
+def upsert(name: str, command: list[str] | None = None, env: dict[str, str] | None = None,
+           enabled: bool = True, *, url: str | None = None) -> dict[str, Any]:
     """新增/更新连接器定义（不自动启动；Kotlin 侧随后调 ensure）。"""
     if not _is_valid_name(name):
         return {"ok": False, "error": f"invalid connector name: {name!r}"}
-    if not isinstance(command, list) or not command or \
-            not all(isinstance(a, str) for a in command):
-        return {"ok": False, "error": "command must be a list of strings"}
     cfg = load_config()
-    cfg[name] = {"command": command, "env": env or {}, "enabled": enabled}
+    if url:
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return {"ok": False, "error": "url must be http(s)"}
+        cfg[name] = {"transport": "http", "url": url, "env": env or {},
+                     "enabled": enabled}
+    else:
+        if not isinstance(command, list) or not command or \
+                not all(isinstance(a, str) for a in command):
+            return {"ok": False, "error": "command must be a list of strings"}
+        cfg[name] = {"command": command, "env": env or {}, "enabled": enabled}
     save_config(cfg)
     if name in _connectors:
         _connectors[name].stop()
@@ -221,6 +227,14 @@ def remove(name: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+def _build_connector(name: str, spec: dict[str, Any]):
+    """按配置的 transport 选实现：stdio（缺省）或 http（官方远程）。"""
+    if spec.get("transport") == "http" and spec.get("url"):
+        from mcp_remote import RemoteConnector
+        return RemoteConnector(name, spec["url"], spec.get("env") or {})
+    return Connector(name, spec.get("command", []), spec.get("env") or {})
+
+
 def ensure_all(start_enabled: bool = True) -> dict[str, Any]:
     """按配置恢复全部启用的连接器（桥启动/配置变更后调用）。"""
     cfg = load_config()
@@ -230,8 +244,7 @@ def ensure_all(start_enabled: bool = True) -> dict[str, Any]:
             continue
         conn = _connectors.get(name)
         if conn is None:
-            conn = Connector(name, spec.get("command", []),
-                             spec.get("env") or {})
+            conn = _build_connector(name, spec)
             _connectors[name] = conn
         if conn.status != "ready":
             if conn.start() and conn.handshake():
