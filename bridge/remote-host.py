@@ -106,6 +106,9 @@ async def serve(host: str, port: int, home: Path, workspace: Path,
     rh.pair_code = _os.environ.get("FORGE_REMOTE_TEST_CODE") or rh.new_pair_code()
     print(f"[remote-host] listening on ws://{host}:{port}/remote", flush=True)
     print(f"[remote-host] pair code: {rh.pair_code}", flush=True)
+    # 配对码弹窗（共享 rh；headless 静默跳过）
+    import threading as _threading
+    _threading.Thread(target=_show_code_dialog, args=(rh,), daemon=True).start()
 
     async def handler(ws):
         device_id = None
@@ -245,6 +248,46 @@ async def run_task(agent: Agent, task: str, history: list, emit,
         await emit({"type": "run_done", **summary})
     except Exception as exc:                    # noqa: BLE001
         await emit({"type": "run_failed", "error": str(exc)})
+
+
+def _show_code_dialog(rh: "RemoteHost") -> None:
+    """桌面配对码弹窗：大号显示当前码；重置=换码并踢出全部已配对设备。
+
+    headless / 无显示环境静默跳过（控制台仍有配对码输出）。
+    """
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.title("forge 遥控配对")
+        root.geometry("360x250")
+        root.attributes("-topmost", True)
+
+        tk.Label(root, text="手机「🖥️ 遥控 → 匹配电脑」输入此配对码",
+                 font=("Microsoft YaHei UI", 10)).pack(pady=(18, 2))
+        code_var = tk.StringVar(value=rh.pair_code)
+        tk.Label(root, textvariable=code_var, fg="#1a6fc4",
+                 font=("Consolas", 44, "bold")).pack(pady=6)
+        state_var = tk.StringVar(value=f"已配对设备：{len(rh.paired)} 台")
+
+        def refresh_state(*_):
+            state_var.set(f"已配对设备：{len(rh.paired)} 台")
+
+        def reset():
+            rh.new_pair_code()
+            rh.paired.clear()
+            rh.pending_approvals.clear()
+            code_var.set(rh.pair_code)
+            state_var.set("已重置——旧设备需重新配对")
+            root.after(2000, refresh_state)
+
+        tk.Button(root, text="重置配对码（踢出全部设备）", command=reset,
+                  relief="flat", fg="#c0392b").pack(pady=8)
+        tk.Label(root, textvariable=state_var, fg="#777").pack()
+        root.protocol("WM_DELETE_WINDOW", root.iconify)   # 关窗=藏，服务不停
+        root.mainloop()
+    except Exception:                       # noqa: BLE001 — headless 容错
+        pass
 
 
 # ── CLI 接线（run.py remote-host）──────────────────────────────

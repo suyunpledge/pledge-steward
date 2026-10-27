@@ -30,6 +30,7 @@ fun RemoteModeScreen() {
     var code by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var showCodeDialog by remember { mutableStateOf(false) }
 
     fun refresh() {
         scope.launch {
@@ -95,43 +96,20 @@ fun RemoteModeScreen() {
 
         HorizontalDivider()
 
-        // 配对表单
-        Text("配对电脑", style = MaterialTheme.typography.titleSmall)
-        Text("电脑侧运行：python forge-android/bridge/remote-host.py --lan（显示 6 位配对码）",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedTextField(value = host, onValueChange = { host = it },
-            label = { Text("电脑 IP（如 192.168.1.100）") }, singleLine = true)
-        OutlinedTextField(value = port, onValueChange = { port = it },
-            label = { Text("端口（默认 8765）") }, singleLine = true)
-        OutlinedTextField(value = code, onValueChange = { code = it },
-            label = { Text("配对码（6 位）") }, singleLine = true)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                scope.launch {
-                    busy = true
-                    val r = withContext(Dispatchers.IO) {
-                        bridgePost(context, "/remote/pair", JSONObject()
-                            .put("host", host).put("port", port.toIntOrNull() ?: 8765)
-                            .put("code", code))
-                    }
-                    msg = if (r?.optBoolean("ok") == true) "配对成功，已切遥控模式"
-                        else (r?.optString("error") ?: "失败")
-                    refresh(); busy = false
-                }
-            }, enabled = host.isNotBlank() && code.length == 6 && !busy) {
-                Text("配对并遥控")
+        // 匹配电脑（一键流）
+        if (!paired) {
+            OutlinedTextField(value = host, onValueChange = { host = it },
+                label = { Text("电脑 IP（如 192.168.1.100）") }, singleLine = true)
+            OutlinedTextField(value = port, onValueChange = { port = it },
+                label = { Text("端口（默认 8765）") }, singleLine = true)
+            Button(onClick = { showCodeDialog = true },
+                enabled = host.isNotBlank() && !busy,
+                modifier = Modifier.fillMaxWidth()) {
+                Text("匹配电脑")
             }
-            if (paired) {
-                TextButton(onClick = {
-                    scope.launch {
-                        val r = withContext(Dispatchers.IO) {
-                            bridgePost(context, "/remote/unpair", JSONObject())
-                        }
-                        msg = "已解除配对"; refresh()
-                    }
-                }) { Text("解除配对", color = MaterialTheme.colorScheme.error) }
-            }
+            Text("电脑侧运行 remote-host.py 后会弹出配对码——点上方按钮输入即可",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
         if (msg.isNotEmpty()) {
@@ -139,4 +117,54 @@ fun RemoteModeScreen() {
                 style = MaterialTheme.typography.bodySmall)
         }
     }
+
+    if (showCodeDialog) {
+        PairCodeDialog(
+            host = host, port = port,
+            onDismiss = { showCodeDialog = false },
+            onConfirm = { code ->
+                showCodeDialog = false
+                scope.launch {
+                    busy = true
+                    val r = withContext(Dispatchers.IO) {
+                        bridgePost(context, "/remote/pair", JSONObject()
+                            .put("host", host)
+                            .put("port", port.toIntOrNull() ?: 8765)
+                            .put("code", code))
+                    }
+                    msg = if (r?.optBoolean("ok") == true) "匹配成功——已进入遥控模式"
+                        else (r?.optString("error") ?: "匹配失败，检查码/IP")
+                    refresh(); busy = false
+                }
+            })
+    }
+}
+
+@Composable
+private fun PairCodeDialog(
+    host: String, port: String,
+    onDismiss: () -> Unit,
+    onConfirm: (code: String) -> Unit,
+) {
+    var code by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = onDismiss,
+        title = { Text("输入配对码") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("电脑屏幕上的 forge 配对弹窗显示 6 位数字",
+                    style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { if (it.length <= 6) code = it.filter { c -> c.isDigit() } },
+                    label = { Text("配对码") },
+                    singleLine = true,
+                    placeholder = { Text("······") })
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(code) }, enabled = code.length == 6) {
+                Text("确认匹配")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }

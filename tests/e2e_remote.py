@@ -1,10 +1,16 @@
-﻿import asyncio, json, os, subprocess, sys, time
-sys.path.insert(0, r"bridge")
+import asyncio, json, os, subprocess, sys, time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+BRIDGE = HERE.parent / "bridge"
+sys.path.insert(0, str(BRIDGE))
+os.environ["FORGE_ROOT"] = r"C:\Users\匡溯昀\pledge-evolving"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge"))
 os.environ["FORGE_ROOT"] = r"C:\Users\匡溯昀\pledge-evolving"
 
 # 1. 起 remote-host（固定码）
 env = dict(os.environ, FORGE_REMOTE_TEST_CODE="424242", PYTHONIOENCODING="utf-8")
-host_proc = subprocess.Popen([sys.executable, "-u", r"bridge\remote-host.py", "--port", "8462"],
+host_proc = subprocess.Popen([sys.executable, "-u", str(BRIDGE / "remote-host.py"), "--port", "8462"],
                               env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 time.sleep(4)
 
