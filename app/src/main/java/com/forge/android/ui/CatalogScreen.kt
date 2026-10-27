@@ -195,8 +195,8 @@ private fun InstallDialog(item: CatalogItem, onDismiss: () -> Unit,
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }
 
-// 打开控制台 URL（普通函数；context 由调用方在 composable 上下文取好）
-private fun openConsoleUrl(context: android.content.Context, url: String) {
+// 打开控制台 URL（internal 供包内共享——OnboardingScreen 也用）
+internal fun openConsoleUrl(context: android.content.Context, url: String) {
     try {
         val i = android.content.Intent(android.content.Intent.ACTION_VIEW,
             android.net.Uri.parse(url))

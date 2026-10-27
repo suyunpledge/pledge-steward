@@ -364,6 +364,13 @@ async def health():
             "shizuku_tools": sorted(_android_tools & _SHIZUKU_ONLY)}
 
 
+# ── v0.6 新手引导：首启 API key 配置（onboarding）──
+try:
+    import onboarding
+    onboarding.register_routes(app)
+except Exception:  # noqa: BLE001
+    pass
+
 # ── v0.5 遥控模式：remote_client 真路由（替代原 501 预留）──
 # 手机「本地/遥控电脑」双模式：pair/unpair/status/mode/approve 全套；
 # run 分流见 WS handler（mode=remote 时转发桌面执行）。

@@ -14,11 +14,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import com.forge.android.bridge.Events
 import androidx.compose.ui.unit.dp
 import com.forge.android.bridge.AgentBridgeService
 import com.forge.android.ui.CatalogScreen
 import com.forge.android.ui.RemoteModeScreen
+import com.forge.android.ui.OnboardingScreen
 import com.forge.android.ui.AssistantScreen
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBar
@@ -94,7 +97,20 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun App() {
-        var tab by remember { mutableIntStateOf(0) }   // 0 对话 / 1 助理 / 2 目录
+        var tab by remember { mutableIntStateOf(0) }
+        var onboarded by remember { mutableStateOf<Boolean?>(null) }
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        LaunchedEffect(Unit) {
+            val st = withContext(Dispatchers.IO) { bridgeGetStatus(ctx) }
+            onboarded = !(st?.optBoolean("needed") ?: false)
+        }
+        if (onboarded == null) {
+            Box(Modifier.fillMaxSize()) {
+                CircularProgressIndicator(Modifier.align(androidx.compose.ui.Alignment.Center))
+            }
+        } else if (onboarded == false) {
+            OnboardingScreen(onDone = { onboarded = true })
+        } else {
         MaterialTheme {
             Column(Modifier.fillMaxSize()) {
                 StatusStrip()
@@ -131,6 +147,7 @@ class MainActivity : ComponentActivity() {
                 if (tab == 0) InputBar(onSend = { send(it) })
             }
         }
+        }   // else(onboarded) 闭合
     }
 
     @Composable
@@ -218,3 +235,14 @@ class MainActivity : ComponentActivity() {
 }
 
 data class ChatItem(val role: String, val text: String)
+
+internal fun bridgeGetStatus(context: android.content.Context): org.json.JSONObject? =
+    runCatching {
+        val req = okhttp3.Request.Builder()
+            .url("http://127.0.0.1:8000/onboarding/status")
+            .header("Authorization", "Bearer " + com.forge.android.bridge.BridgeToken.get(context))
+            .build()
+        okhttp3.OkHttpClient().newCall(req).execute().use {
+            if (it.isSuccessful) org.json.JSONObject(it.body?.string() ?: "{}") else null
+        }
+    }.getOrNull()
