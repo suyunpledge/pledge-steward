@@ -213,7 +213,18 @@ async def agent_ws(ws: WebSocket):
             agent=_build_session_agent(session_id);_sessions[session_id]=agent
         await emit({"type":"ready","session":session_id,"tools":sorted(_android_tools)})
         async def drive(task,history,token):
-            try:await _run_agent(agent,task,history,emit,cancellation=token)
+            try:
+                # v0.5 双模式分流：遥控模式转发桌面 forge（审批弹回手机）
+                try:
+                    import remote_client as _rc
+                    _mode = _rc.status().get("mode", "local")
+                except Exception:                            # noqa: BLE001
+                    _mode = "local"
+                if _mode == "remote":
+                    from remote_client import DesktopLink
+                    await DesktopLink(emit).run(task, history or [])
+                else:
+                    await _run_agent(agent,task,history,emit,cancellation=token)
             finally:_sessions_busy.discard(session_id)
         while True:
             try:
@@ -353,9 +364,14 @@ async def health():
             "shizuku_tools": sorted(_android_tools & _SHIZUKU_ONLY)}
 
 
-@app.post("/remote/{path:path}")
-async def remote_stub(path: str):
-    raise HTTPException(501, "remote control reserved; not in v0.2")
+# ── v0.5 遥控模式：remote_client 真路由（替代原 501 预留）──
+# 手机「本地/遥控电脑」双模式：pair/unpair/status/mode/approve 全套；
+# run 分流见 WS handler（mode=remote 时转发桌面执行）。
+try:
+    import remote_client
+    remote_client.register_routes(app)
+except Exception:  # noqa: BLE001 — 遥控路由失败不阻塞桥本体
+    pass
 
 
 # ── v0.3 个人助理模式：MCP 连接器管理 + 助理问答（失败不阻塞桥本体）──

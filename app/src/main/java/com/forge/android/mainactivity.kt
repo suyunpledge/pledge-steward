@@ -18,6 +18,7 @@ import com.forge.android.bridge.Events
 import androidx.compose.ui.unit.dp
 import com.forge.android.bridge.AgentBridgeService
 import com.forge.android.ui.CatalogScreen
+import com.forge.android.ui.RemoteModeScreen
 import com.forge.android.ui.AssistantScreen
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBar
@@ -110,8 +111,11 @@ class MainActivity : ComponentActivity() {
                             tab = 0
                         }, onOpenCatalog = { tab = 2 })
                     }
-                    else -> Box(Modifier.weight(1f)) {
+                    2 -> Box(Modifier.weight(1f)) {
                         CatalogScreen(onInstalled = { tab = 1 })
+                    }
+                    else -> Box(Modifier.weight(1f)) {
+                        RemoteModeScreen()
                     }
                 }
                 NavigationBar {
@@ -121,6 +125,8 @@ class MainActivity : ComponentActivity() {
                         icon = { Text("🤝") }, label = { Text("助理") })
                     NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                         icon = { Text("🧩") }, label = { Text("目录") })
+                    NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
+                        icon = { Text("🖥️") }, label = { Text("遥控") })
                 }
                 if (tab == 0) InputBar(onSend = { send(it) })
             }
