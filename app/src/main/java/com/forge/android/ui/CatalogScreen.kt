@@ -78,6 +78,8 @@ fun CatalogScreen(onInstalled: () -> Unit) {
             }
             LazyColumn(Modifier.padding(pad).padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                // 已装连接器管理（启停/状态；空则零打扰不渲染）
+                item { InstalledConnectors() }
                 if (pinned.isNotEmpty()) {
                     item { Text("★ 常用", style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(top = 12.dp)) }
@@ -203,5 +205,75 @@ internal fun openConsoleUrl(context: android.content.Context, url: String) {
         i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(i)
     } catch (_: Exception) {
+    }
+}
+
+@Composable
+private fun InstalledConnectors() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var connectors by remember { mutableStateOf(listOf<ConnectorSnap>()) }
+    var loaded by remember { mutableStateOf(false) }
+
+    fun reload() {
+        scope.launch {
+            connectors = withContext(Dispatchers.IO) {
+                bridgeGet(context, "/assistant/connectors")
+                    ?.optJSONArray("connectors")?.let { arr ->
+                        (0 until arr.length()).map { ConnectorSnap.from(arr.getJSONObject(it)) }
+                    } ?: emptyList()
+            }
+            loaded = true
+        }
+    }
+    LaunchedEffect(Unit) { reload() }
+    if (!loaded || connectors.isEmpty()) return
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("已接入 ${connectors.size} 个服务",
+            style = MaterialTheme.typography.titleSmall)
+        connectors.forEach { c ->
+            Card(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text(c.name, style = MaterialTheme.typography.titleSmall)
+                        Text(when (c.status) {
+                            "ready" -> "就绪 · ${c.toolCount} 工具"
+                            "failed" -> "失败：${c.error?.take(30)}"
+                            else -> c.status
+                        }, style = MaterialTheme.typography.labelSmall,
+                            color = if (c.status == "ready") MaterialTheme.colorScheme.tertiary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = c.enabled, onCheckedChange = { en ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                bridgePost(context, "/assistant/connectors",
+                                    org.json.JSONObject().put("name", c.name)
+                                        .put("command", org.json.JSONArray().apply {
+                                            c.command.forEach { put(it) } })
+                                        .put("enabled", en))
+                            }
+                            reload()
+                        }
+                    })
+                }
+            }
+        }
+    }
+}
+
+data class ConnectorSnap(
+    val name: String, val status: String, val enabled: Boolean,
+    val command: List<String>, val toolCount: Int, val error: String?) {
+    companion object {
+        fun from(o: org.json.JSONObject) = ConnectorSnap(
+            o.optString("name"), o.optString("status"),
+            o.optBoolean("enabled", true),
+            run { val a = o.optJSONArray("command") ?: org.json.JSONArray()
+                  (0 until a.length()).map { a.optString(it) } },
+            o.optJSONArray("tools")?.length() ?: 0,
+            if (o.isNull("error")) null else o.optString("error"))
     }
 }

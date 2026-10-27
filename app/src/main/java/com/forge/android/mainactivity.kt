@@ -22,7 +22,6 @@ import com.forge.android.bridge.AgentBridgeService
 import com.forge.android.ui.CatalogScreen
 import com.forge.android.ui.RemoteModeScreen
 import com.forge.android.ui.OnboardingScreen
-import com.forge.android.ui.AssistantScreen
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBar
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -91,7 +90,8 @@ class MainActivity : ComponentActivity() {
     private fun send(text: String) {
         if (text.isBlank()) return
         append(ChatItem("user", text))
-        val payload = JSONObject().put("type", "run").put("task", text)
+        val payload = JSONObject().put("type", "run")
+            .put("session", "assistant-default").put("task", text)
         AgentBridgeService.send(this, payload.toString())
     }
 
@@ -117,18 +117,7 @@ class MainActivity : ComponentActivity() {
                 when (tab) {
                     0 -> MessageList(Modifier.weight(1f))
                     1 -> Box(Modifier.weight(1f)) {
-                        AssistantScreen(onAsk = { text ->
-                            append(ChatItem("user", text))
-                            val payload = JSONObject()
-                                .put("type", "run")
-                                .put("session", "assistant-default")
-                                .put("task", text)
-                            AgentBridgeService.send(this@MainActivity, payload.toString())
-                            tab = 0
-                        }, onOpenCatalog = { tab = 2 })
-                    }
-                    2 -> Box(Modifier.weight(1f)) {
-                        CatalogScreen(onInstalled = { tab = 1 })
+                        CatalogScreen(onInstalled = { tab = 0 })
                     }
                     else -> Box(Modifier.weight(1f)) {
                         RemoteModeScreen()
@@ -138,10 +127,8 @@ class MainActivity : ComponentActivity() {
                     NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
                         icon = { Text("💬") }, label = { Text("对话") })
                     NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
-                        icon = { Text("🤝") }, label = { Text("助理") })
-                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                         icon = { Text("🧩") }, label = { Text("目录") })
-                    NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
+                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                         icon = { Text("🖥️") }, label = { Text("遥控") })
                 }
                 if (tab == 0) InputBar(onSend = { send(it) })
@@ -204,9 +191,10 @@ class MainActivity : ComponentActivity() {
     private fun EmptyState() {
         Column(Modifier.fillMaxWidth().padding(32.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("forge · Android", style = MaterialTheme.typography.titleLarge)
+            Text("forge", style = MaterialTheme.typography.titleLarge)
             Text(
-                if (bridgeState.value == "ready") "桥已就绪，输入任务开始。"
+                if (bridgeState.value == "ready")
+                    "直接问任何事——已内置联网搜索。\n进阶：🧩 目录接入服务，🖥️ 遥控电脑执行任务。"
                 else "首次启动在解包 Linux 环境并拉起 Python Agent（约 1-2 分钟）…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
