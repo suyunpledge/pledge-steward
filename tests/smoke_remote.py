@@ -17,7 +17,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 BRIDGE = HERE.parent / "bridge"
 sys.path.insert(0, str(BRIDGE))
-FORGE_ROOT = os.environ.setdefault("FORGE_ROOT", r"C:\Users\匡溯昀\pledge-evolving")
+FORGE_ROOT = os.environ.setdefault(
+    "FORGE_ROOT", str(Path(__file__).resolve().parent.parent / "build" / "forge-src"))
+if not (Path(FORGE_ROOT) / "forge" / "loop.py").exists():
+    raise SystemExit("[skip] 未找到 forge 内核 %s —— 先运行 python scripts/fetch-forge.py" % FORGE_ROOT)
 sys.path.insert(0, FORGE_ROOT)
 sys.path.insert(0, str(Path(FORGE_ROOT) / "forge" / "contrib"))
 

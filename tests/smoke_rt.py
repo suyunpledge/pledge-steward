@@ -11,11 +11,14 @@ from unittest.mock import patch
 from contextlib import nullcontext
 import threading,time,hashlib,json
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get(
+    "FORGE_ROOT", str(Path(__file__).resolve().parent.parent / "build" / "forge-src")))
+if not (ROOT / "forge" / "loop.py").exists():
+    raise SystemExit("[skip] 未找到 forge 内核 %s —— 先运行 python scripts/fetch-forge.py" % ROOT)
 TEMP = tempfile.TemporaryDirectory()
 os.environ.update(FORGE_ROOT=str(ROOT), FORGE_HOME=TEMP.name+'/home',
                   FORGE_WORKSPACE=TEMP.name+'/workspace', FORGE_BRIDGE_TOKEN='test-token-'+'a'*40)
-sys.path[:0] = [str(ROOT), str(ROOT/'forge-android/bridge')]
+sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parent.parent / 'bridge')]
 from fastapi.testclient import TestClient
 from forge.tools import ToolRegistry, ToolContext
 from forge.policy import Policy, Mode
@@ -263,12 +266,12 @@ class BridgeTests(unittest.TestCase):
         finally:bridge._sessions_busy.discard('sse')
 
     def test_native_libraries_have_pinned_hashes_and_complete_elf_dependencies(self):
-        scripts=ROOT/'forge-android/scripts';sys.path.insert(0,str(scripts))
+        scripts=Path(__file__).resolve().parent.parent/'scripts';sys.path.insert(0,str(scripts))
         from native_elf import elf
         lock=json.loads((scripts/'native-host-lock.json').read_text())
         binaries=lock['binaries'];self.assertEqual(len(binaries),8)
         for name,record in binaries.items():
-            data=(ROOT/'forge-android/app/src/main/jniLibs/arm64-v8a'/name).read_bytes()
+            data=(Path(__file__).resolve().parent.parent/'app/src/main/jniLibs/arm64-v8a'/name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(),record['sha256'],name)
             self.assertFalse(set(elf(data)['needed'])-set(binaries)-{'libc.so','libm.so','libdl.so','liblog.so'},name)
         for name in ('libproot.so','libproot-loader.so','libbusybox.so'):

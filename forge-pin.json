@@ -1,0 +1,6 @@
+{
+  "repo": "suyunpledge/pledge-evolving",
+  "ref": "a18f6e4ca4591be8207804fb9f8851e74ec2754f",
+  "pinned_at": "2026-11-02",
+  "note": "forge 内核单一来源：本仓不含 forge/ 与 bundles/，rootfs 打包与冒烟测试均从该 pin 拉取（scripts/fetch-forge.py）。"
+}

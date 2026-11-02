@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Run as root inside a dedicated Ubuntu WSL distribution; never on /mnt/c.
 set -euo pipefail
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+STEWARD=$(cd "$(dirname "$0")/.." && pwd)
+SRC=${FORGE_SRC:-$STEWARD/build/forge-src}   # forge 内核源码（scripts/fetch-forge.py 产物）
 BUILD=${FORGE_ROOTFS_BUILD:-/root/forge-arm64-build}
 ROOT="$BUILD/rootfs"
-OUT="$REPO/forge-android/app/src/main/assets/forge-rootfs-arm64.tar"
+OUT="$STEWARD/app/src/main/assets/forge-rootfs-arm64.tar"
 [[ $EUID == 0 ]] || { echo 'Run this script as root in WSL' >&2; exit 1; }
 [[ "$BUILD" == /root/forge-arm64-build ]] || { echo 'Unsupported build directory' >&2; exit 1; }
 if [[ "${1:-}" == --repack ]]; then
@@ -36,21 +37,21 @@ chroot "$ROOT" /debootstrap/debootstrap --second-stage
 fi
 mkdir -p "$ROOT/opt/forge" "$ROOT/opt/forge/workspace" "$ROOT/workspace" "$ROOT/forge-home" "$ROOT/tmp"
 chmod 1777 "$ROOT/tmp"
-# Copy the complete public source tree, including this worktree's fixes. Exclude
-# ignored credentials, .git, host build outputs and the generated rootfs itself.
-cd "$REPO"
-GIT=(git -C "$REPO")
-if [[ -f "$REPO/.git" ]]; then
-  gitdir=$(sed -n 's/^gitdir: //p' "$REPO/.git" | tr -d '\r')
-  if [[ "$gitdir" =~ ^[A-Za-z]: ]]; then
-    GIT=(git "--git-dir=$(wslpath -u "$gitdir")" "--work-tree=$REPO")
-  fi
-fi
+# Stage the pinned forge kernel tree (scripts/fetch-forge.py output; no monorepo
+# checkout needed), excluding .git and the superseded forge-android directory.
+# Then overlay THIS repo bridge modules at the top level: forge_bridge imports its
+# siblings (bridge_tools/assistant_mode/onboarding/mcp_connectors/remote_client/...)
+# as flat top-level modules, so ALL bridge .py files must be staged — the old
+# two-file copy silently disabled assistant mode / onboarding / MCP on device.
+[[ -f "$SRC/forge/loop.py" && -d "$SRC/bundles" ]] || {
+  echo "forge kernel source missing under $SRC — run: python scripts/fetch-forge.py" >&2
+  exit 1
+}
 [[ ! -e "$ROOT/opt/forge.new" && ! -e "$ROOT/opt/forge.old" ]] || { echo 'Inspect interrupted source staging first' >&2; exit 1; }
 mkdir "$ROOT/opt/forge.new"
-"${GIT[@]}" ls-files -z --cached --others --exclude-standard |
-  tar --null -T - -cf - | tar -xf - -C "$ROOT/opt/forge.new"
-cp forge-android/bridge/forge_bridge.py forge-android/bridge/bridge_tools.py "$ROOT/opt/forge.new/"
+tar -C "$SRC" --exclude='./.git' --exclude='./forge-android' -cf - . |
+  tar -xf - -C "$ROOT/opt/forge.new"
+cp "$STEWARD"/bridge/*.py "$ROOT/opt/forge.new/"
 mv "$ROOT/opt/forge" "$ROOT/opt/forge.old"
 mv "$ROOT/opt/forge.new" "$ROOT/opt/forge"
 # Only disposable source in this fixed, resolved build root is replaced.
@@ -62,7 +63,12 @@ import sys
 sys.path.insert(0,"/opt/forge")
 import forge, fastapi, uvicorn, websockets, forge_bridge
 from forge.loop import build_agent
-print("arm64 runtime and bridge imports passed")
+mods = ("assistant_mode","onboarding","mcp_connectors","remote_client")
+missing = [m for m in mods if m not in sys.modules]
+assert not missing, "bridge modules failed to import: %r" % missing
+paths = {getattr(r,"path","") for r in forge_bridge.app.routes}
+assert "/assistant/ask" in paths and "/onboarding/status" in paths, sorted(paths)
+print("arm64 runtime + full bridge module set passed")
 '
 chroot "$ROOT" /usr/bin/python3 - <<'PY'
 import os, socket, subprocess, time, urllib.request, json, asyncio, secrets

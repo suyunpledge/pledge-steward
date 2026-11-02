@@ -42,6 +42,7 @@ _d = _P(__file__).resolve()
 for _ in range(4):                      # 向上 4 级（bridge/ → forge-android/ → repo）
     _cands.append(_d)
     _d = _d.parent
+_cands.append(_P(__file__).resolve().parent.parent / "build" / "forge-src")  # steward fetch-forge 产物
 _cands.append(_P("/opt/forge"))
 for _root in _cands:
     if (_root / "forge" / "loop.py").exists():

@@ -4,9 +4,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 BRIDGE = HERE.parent / "bridge"
 sys.path.insert(0, str(BRIDGE))
-os.environ["FORGE_ROOT"] = r"C:\Users\匡溯昀\pledge-evolving"
+os.environ.setdefault("FORGE_ROOT", str(Path(__file__).resolve().parent.parent / "build" / "forge-src"))
+if not (Path(os.environ["FORGE_ROOT"]) / "forge" / "loop.py").exists():
+    raise SystemExit("[skip] 未找到 forge 内核 —— 先运行 python scripts/fetch-forge.py")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge"))
-os.environ["FORGE_ROOT"] = r"C:\Users\匡溯昀\pledge-evolving"
+
 
 # 1. 起 remote-host（固定码）
 env = dict(os.environ, FORGE_REMOTE_TEST_CODE="424242", PYTHONIOENCODING="utf-8")
