@@ -31,7 +31,7 @@
 ## 三种用法
 
 ### 1. 直接问（零配置）
-打开「🤝 助理」输入问题——`web_search` 已内置：博查 Key → Brave Key → Bing RSS 免费兜底（国内直连）。不用装任何连接器。
+打开「🤝 助理」输入问题——`web_search` 已内置：博查/Brave Key → Bing 国际版 → DuckDuckGo 免费兜底（默认美国端点）。不用装任何连接器。
 
 ### 2. 一键接入服务（🧩 目录）
 置顶 7 个常用：**高德地图 / 12306 / 飞书 / Notion / 小红书 / 淘宝比价 / GitHub**。点卡片 → 弹授权表单（「去获取 Key →」直跳控制台）→ 安装并连接。免费直连的（12306/A股/淘宝比价/京东秒杀/Playwright/Context7/Airbnb）点一下就装。
@@ -62,7 +62,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 | `bridge/forge_bridge.py` | FastAPI 桥：WS/SSE、Bearer 认证、工具分发 |
 | `bridge/mcp_connectors.py` + `mcp_remote.py` | MCP 运行时：stdio 子进程 + 官方远程 HTTP 双传输 |
 | `bridge/connector_catalog.py` | 47 服务预置目录（场景分组数据源） |
-| `bridge/web_search_tools.py` | 内置联网搜索（三级降级） |
+| `bridge/web_search_tools.py` | 内置联网搜索（多级降级，默认美国端点） |
 | `bridge/phone_tools.py` | 手机原生工具定义 |
 | `bridge/PROTOCOL.md` | 壳↔Agent 契约（含远程控制电脑预留 §6） |
 | `docs/` | ROOTFS 制作 / 连接器目录 / 灰度状态 |
