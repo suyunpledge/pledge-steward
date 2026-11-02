@@ -11,8 +11,8 @@ android {
         applicationId = "com.forge.android"
         minSdk = 26          // Accessibility takeScreenshot 需要 30+，26 起步向下兼容（截图走 Shizuku）
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = 2
+        versionName = "0.5.0"
         ndk { abiFilters += listOf("arm64-v8a") }   // PRoot rootfs 是 arm64
     }
 

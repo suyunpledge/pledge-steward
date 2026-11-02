@@ -18,7 +18,7 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application
-        android:label="forge"
+        android:label="Steward"
         android:icon="@android:drawable/ic_menu_manage"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:extractNativeLibs="true"
@@ -39,7 +39,7 @@
         <!-- 无障碍：UI 树 + 点击输入（官方能力，非第三方框架） -->
         <service android:name=".tools.ForgeAccessibility"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true" android:label="forge 设备操作">
+            android:exported="true" android:label="Steward 设备操作">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>

@@ -29,7 +29,7 @@
 ## 灰度发布步骤
 
 ```bash
-cd forge-android-build/forge-android
+cd pledge-steward
 python scripts/fetch-host-bins.py          # ① 补齐依赖 so（网络好时）
 ./gradlew :app:assembleDebug               # ② 重新打包（jniLibs 变化）
 adb install app/build/outputs/apk/debug/app-debug.apk

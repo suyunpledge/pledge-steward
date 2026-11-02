@@ -1,7 +1,8 @@
-# forge 手机版（Android）— 个人助理 + MCP 连接器市场
+# pledge-steward — Android 个人助理（原 forge-android / forge 手机版）
 
-> 桌面版（Windows：Work 对话 + Coding Mode）见 [仓库根 README](../README.zh.md)。
-> 本目录是**手机版**：Kotlin Compose 原生应用 + 设备端 Python Agent。
+> Kotlin Compose 原生应用 + 设备端 Python Agent（forge 内核）。
+> 2026-11-02 从 [pledge-evolving](https://github.com/suyunpledge/pledge-evolving) 单仓的 `forge-android/` 拆出独立存仓，首个独立版本 v0.5.0。
+> 桌面版（Windows：Work 对话 + Coding Mode）仍在 pledge-evolving。
 
 ## 一句话
 
@@ -28,31 +29,37 @@
 └────────────────────────────────┘
 ```
 
-## 三种用法
+## 与 forge 内核的关系（pin 机制）
 
-### 1. 直接问（零配置）
-打开「🤝 助理」输入问题——`web_search` 已内置：博查/Brave Key → Bing 国际版 → DuckDuckGo 免费兜底（默认美国端点）。不用装任何连接器。
+本仓只含手机侧：Kotlin 壳、Python 桥、rootfs/构建脚本与测试。
+Agent 内核 `forge/` 与 `bundles/` **不入库**，由 [`forge-pin.json`](forge-pin.json) 固定版本，
+[`scripts/fetch-forge.py`](scripts/fetch-forge.py) 拉取到 `build/forge-src`（rootfs 打包与冒烟测试共用同一份）。
 
-### 2. 一键接入服务（🧩 目录）
-置顶 7 个常用：**高德地图 / 12306 / 飞书 / Notion / 小红书 / 淘宝比价 / GitHub**。点卡片 → 弹授权表单（「去获取 Key →」直跳控制台）→ 安装并连接。免费直连的（12306/A股/淘宝比价/京东秒杀/Playwright/Context7/Airbnb）点一下就装。
-
-其余按场景折叠：办公协作(10) / 生活日常(14) / 开发运维(8) / 专业服务(8)。
-
-### 3. 手机原生工具
-`phone.sms.list/search/send`、`phone.call.dial/log`、`phone.contacts.search`——读短信/查通话/搜联系人直接用；发短信/拨号弹确认。
+升级内核 = 改 pin → `python scripts/fetch-forge.py` → 跑冒烟 → 重打 rootfs。
 
 ## 构建
 
 ```bash
-# 1) rootfs 镜像（PC/WSL 一次性，见 docs/ROOTFS.md）
-# 2) 宿主二进制（proot/busybox arm64）
+# 0) forge 内核源码（一次性；改 pin 后重跑。离线可用 --local <pledge-evolving 检出路径>）
+python scripts/fetch-forge.py
+# 1) 宿主二进制（proot/busybox arm64，幂等）
 python scripts/fetch-host-bins.py
-# 3) APK
+# 2) APK
 ./gradlew :app:assembleDebug
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-灰度版状态与真机待办（INTERP/linker 方案等）：[`docs/GRAY-RELEASE.md`](docs/GRAY-RELEASE.md)
+rootfs 镜像（PC/WSL 一次性）：先 `fetch-forge.py`，再按 [docs/ROOTFS.md](docs/ROOTFS.md) 执行
+`scripts/build-rootfs.sh`——**不再需要 pledge-evolving 检出**。
+
+## 验证
+
+```bash
+python tools/verify-rootfs-layout.py   # PC 仿真 /opt/forge 布局：桥模块齐全 + 路由注册 + /health
+python tests/smoke_rt.py               # 离线契约检查
+python tests/smoke_assistant.py        # 助理模式/MCP（起真 uvicorn）
+# 其余：smoke_catalog / smoke_onboarding / smoke_remote / smoke_remote_host / e2e_remote
+```
 
 ## 目录
 
@@ -65,12 +72,11 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 | `bridge/web_search_tools.py` | 内置联网搜索（多级降级，默认美国端点） |
 | `bridge/phone_tools.py` | 手机原生工具定义 |
 | `bridge/PROTOCOL.md` | 壳↔Agent 契约（含远程控制电脑预留 §6） |
+| `scripts/fetch-forge.py` + `forge-pin.json` | forge 内核版本锚（上游 pledge-evolving） |
+| `scripts/build-rootfs.sh` | arm64 PRoot 镜像构建（WSL） |
+| `tools/verify-rootfs-layout.py` | PC 侧 /opt/forge 布局仿真校验 |
 | `docs/` | ROOTFS 制作 / 连接器目录 / 灰度状态 |
-| `tests/` | 冒烟套件（桥/助理/远程/目录，全绿） |
-
-## 与桌面版的关系
-
-同一 `forge/` 内核零改动。桌面版管代码与电脑控制；手机版管个人助理与设备工具。远程互通（手机控制电脑 forge）协议已留，v0.2+ 接通。
+| `tests/` | 冒烟套件（桥/助理/远程/目录） |
 
 ## 安全纪律
 
@@ -78,3 +84,8 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 - 所有工具走 forge Policy（mode×sandbox）；连接器「能做」≠ Agent「被允许」
 - 设备写操作（点击/输入/发短信/拨号）必须确认；截图不落盘
 - 连接器崩溃只摘除自身工具面，不炸桥；重连自动恢复
+
+## 历史
+
+`git log` 完整保留 forge-android 时期历史（subtree split 自 pledge-evolving@db95193，2026-11-02）。
+真机灰度状态与待办见 [docs/GRAY-RELEASE.md](docs/GRAY-RELEASE.md)。

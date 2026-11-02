@@ -3,3 +3,5 @@
 local.properties
 app/src/main/assets/*.tar*
 scripts/.host-bins-cache/
+/.downloads/
+.venv/

@@ -17,5 +17,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "forge-android"
+rootProject.name = "pledge-steward"
 include(":app")
