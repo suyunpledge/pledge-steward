@@ -35,6 +35,8 @@ import org.json.JSONObject
 class MainActivity : ComponentActivity() {
 
     private val chat = MutableStateFlow(listOf<ChatItem>())
+    /** 最近一次上屏的 agent 文本：run_done 的终答与最后一条 assistant_message 同文，靠它去重。 */
+    private var lastAgentText = ""
     private val bridgeState = Events.bridgeState
     private val running = Events.running
     private val shizukuState = Events.shizukuState
@@ -57,12 +59,15 @@ class MainActivity : ComponentActivity() {
                 "ready" -> bridgeState.value = "ready"
                 "agent.step", "agent.assistant_message" -> {
                     val text = obj.optString("text", obj.optString("content", ""))
-                    if (text.isNotBlank()) append(ChatItem("agent", text))
+                    if (text.isNotBlank()) { lastAgentText = text; append(ChatItem("agent", text)) }
                 }
                 "run_done" -> {
                     running.value = false
                     val answer = obj.optString("answer")
-                    if (answer.isNotBlank()) append(ChatItem("agent", answer))
+                    // 引擎的终答恒等于最后一条非空 assistant_message 的文本（finalAnswer
+                    // 就是它），无条件 append 会把整段回答重复两遍。仅在终答从未由
+                    // assistant_message 上屏过（防御未来协议变化）时才补一条。
+                    if (answer.isNotBlank() && answer != lastAgentText) append(ChatItem("agent", answer))
                     // Cost only when the engine actually knows it; never "¥0" or "¥NaN".
                     val cost = obj.optDouble("cost").takeIf { obj.has("cost") && !it.isNaN() }?.let { " · ¥$it" }.orEmpty()
                     append(ChatItem("summary",

@@ -24,3 +24,22 @@
 4. 取消（用户主动 cancel）在宿主亚秒执行语义下仍无自然触发窗口，`run_failed(cancelled)` 事件维持代码级验证。
 
 测试配方：adb forward 18000→8000；token=shared_prefs/bridge-private.xml（run-as 读取）；真模型=deepseek-chat（key 来自桌面 ~/.forge/keys.json，经 /onboarding/apply 写入）；无障碍=adb settings put secure + appops SYSTEM_ALERT_WINDOW allow；重装可清除无障碍 Crashed 状态。
+
+## 2026-11-03 后端复核补充
+
+复核设备：`ebb4d24f`（`libra / Mi 4c / API 30`）。安装并启动
+`app/build/outputs/apk/debug/app-debug.apk` 后，`AgentBridgeService` 保持
+`isForeground=true`，转发到 `127.0.0.1:18000` 的 `/health` 返回
+`status=ok`、`native=true`、`agent_ready=true`。
+
+- 带安装级 Bearer token 的 `/onboarding/status` 返回 `has_provider=true`；
+  当前 Provider 为 `deepseek-chat`，API Key 以 `ks1:` Keystore 密文形式落盘。
+- WebSocket `/agent/ws?session=ws-check` 收到 `ready`，发送 `tool_result` 后继续收到
+  `pong`；重复 session 被拒绝，`../../escape` session 被拒绝。
+- 未认证的 `/assistant/catalog` 返回 401；非法工具回执返回 422；空任务的
+  `/agent/run` 返回 422。
+- `uiautomator dump` 显示主界面 `桥: ready`、对话/目录/遥控三项导航和任务输入框；
+  最近 500 条 logcat 未出现 `FATAL EXCEPTION` 或 `AndroidRuntime` 崩溃。
+
+本次工具进程执行 Gradle 时遇到 Java/Gradle 本机 loopback 连接异常；使用仓库已有的
+已构建 debug APK 完成了上述安装和真机验证，未将该环境故障误判为应用运行时故障。
