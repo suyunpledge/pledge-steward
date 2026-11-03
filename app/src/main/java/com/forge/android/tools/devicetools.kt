@@ -19,7 +19,7 @@ import java.io.ByteArrayOutputStream
  * DeviceTools — android.* 工具分发，读取可降级，输入不自动重放。
  *
  * 输入：WS tool_call 事件（tool/arguments/call_id）
- * 输出：AgentBridgeService.postToolResult（→ /tool/call → Python Agent）
+ * 输出：AgentBridgeService.postToolResult（→ /tool/call → Kotlin Agent）
  *
  * 分级确认（PROTOCOL §5）：点击/输入弹悬浮窗确认气泡；inspect/capture 只读放行；
  * 未注册任意 Android shell；UI 输入依赖无障碍与单次确认。

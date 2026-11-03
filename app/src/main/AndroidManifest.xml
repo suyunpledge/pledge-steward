@@ -12,7 +12,7 @@
     <!-- 悬浮窗（操作确认气泡） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- 网络仅限环回（uvicorn 127.0.0.1）——不加 INTERNET 权限则 lo 也被禁，
+    <!-- 网络仅限环回（Kotlin NativeBridge 127.0.0.1）——不加 INTERNET 权限则 lo 也被禁，
          故保留但代码只允许 127.0.0.1 目标（OkHttp 拦截器强制）。 -->
     <uses-permission android:name="android.permission.INTERNET" />
 

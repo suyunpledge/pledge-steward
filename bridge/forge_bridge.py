@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""forge_bridge v0.2 — Kotlin 壳与 forge Agent 的唯一桥（PRoot Ubuntu 24）。
+"""Legacy desktop bridge (not used by the Android APK).
+
+Android now uses ``NativeBridgeServer.kt`` plus ``forge_worker.py``.  This
+FastAPI module remains only for historical desktop smoke tests and must not be
+copied into the mobile rootfs.
+
+Original design:
 
 架构定稿（2026-10-23）：
 - forge 原样运行于 PRoot Ubuntu 用户态，零改动；只用 build_agent 公开 API。

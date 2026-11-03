@@ -13,7 +13,6 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "0.5.0"
-        ndk { abiFilters += listOf("arm64-v8a") }   // PRoot rootfs 是 arm64
     }
 
     buildTypes {
@@ -30,10 +29,9 @@ android {
     buildFeatures { compose = true; aidl = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.11" }
 
-    // rootfs tar 放 assets（>100MB 时改 APK 扩展文件或首启下载）
+    // Kotlin 原生目录资源放 assets；历史 rootfs 不再由 Android 主路径解包。
     sourceSets["main"].assets.srcDirs("src/main/assets")
-    androidResources { noCompress += "tar" }   // tar 流式解包，不能压
-    packaging { jniLibs.useLegacyPackaging = true } // Native executables must be extracted.
+    packaging { jniLibs.useLegacyPackaging = true }
 }
 
 dependencies {

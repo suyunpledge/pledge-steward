@@ -1,4 +1,8 @@
-# Android Bridge v0.2 实际契约（2026-10-26）
+# Android Bridge v0.6 实际契约（2026-11-02）
+
+HTTP/WebSocket 由 Android `NativeBridgeServer.kt` 实现；`forge_worker.py` 只接收
+newline-delimited JSON。原 `forge_bridge.py` 保留作历史桌面兼容代码，不是 APK 的
+启动入口。
 
 仅监听 127.0.0.1:8000。除 GET /health 外，HTTP 与 WS 都需要安装级 `Authorization: Bearer <token>`。
 loopback 不是 App 私有网络；token 不能放入 URL。
@@ -35,7 +39,7 @@ run_done 表示执行返回，不代表任务成功：execution_state 可为 can
 | POST /capabilities | tools:[str]、approval:bool（默认false）、shizuku:str；只保留已知工具，approval=false 移除写工具 |
 | POST /tool/call | call_id、ok（严格布尔值）、result?（对象）、error?、error_code?、execution_state?:completed/not_started/unknown；只结算未过期 waiter 一次，迟到/重复 404 |
 | POST /agent/run | task/history；SSE 调试入口，会话 sse 互斥（忙时409），断连协作取消 |
-| POST /remote/* | 501，尚未实现 |
+| POST /remote/* | 原生桥保留状态接口；未完成桌面握手时配对/remote 模式 fail-closed |
 
 Kotlin 每 3 秒核对实际能力，只在变化或重连时上报；Shizuku online 和 UserService 已绑定分别判断。
 Python 每轮执行前按最新快照注册 ToolSpec，每次派发前再检查能力撤销和参数类型/范围，核心 Policy 先裁决，宿主执行时再次检查当前能力。

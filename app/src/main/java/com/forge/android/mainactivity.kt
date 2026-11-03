@@ -195,7 +195,7 @@ class MainActivity : ComponentActivity() {
             Text(
                 if (bridgeState.value == "ready")
                     "直接问任何事——已内置联网搜索。\n进阶：🧩 目录接入服务，🖥️ 遥控电脑执行任务。"
-                else "首次启动在解包 Linux 环境并拉起 Python Agent（约 1-2 分钟）…",
+                else "首次启动正在准备 Kotlin Agent 和设备工具…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

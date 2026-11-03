@@ -45,7 +45,7 @@ def main():
             with source,path.open('rb') as original:
                 require(digest(source)==digest(original),'Stale rootfs source: '+name)
             count+=1
-        for name in ('forge_bridge.py','bridge_tools.py'):
+        for name in ('forge_worker.py','bridge_tools.py'):
             with rootfs.extractfile('./opt/forge/'+name) as stream,(ANDROID/'bridge'/name).open('rb') as original:
                 require(digest(stream)==digest(original),'Stale active bridge: '+name)
     with APK.open('rb') as stream:apk_hash=digest(stream)

@@ -1,12 +1,12 @@
 # pledge-steward — Android 个人助理（原 forge-android / forge 手机版）
 
-> Kotlin Compose 原生应用 + 设备端 Python Agent（forge 内核）。
+> Kotlin Compose 原生应用 + Kotlin 原生桥 + Kotlin Agent 核心。
 > 2026-11-02 从 [pledge-evolving](https://github.com/suyunpledge/pledge-evolving) 单仓的 `forge-android/` 拆出独立存仓，首个独立版本 v0.5.0。
 > 桌面版（Windows：Work 对话 + Coding Mode）仍在 pledge-evolving。
 
 ## 一句话
 
-手机上跑一个真正的 AI 个人助理：**内置联网搜索（零配置）、47 个服务一键接入（高德/12306/飞书/Notion/小红书/淘宝比价/GitHub 置顶）、手机原生工具（短信/通话/联系人）**——Python Agent 原样运行在设备上的 PRoot Ubuntu 24 用户态，免 root、免 Termux。
+手机上跑一个真正的 AI 个人助理：**内置模型路由、连接器目录、手机原生工具（短信/通话/联系人）**——桥、Agent 循环、会话日志和设备工具全部运行在 Android Kotlin 进程中，免 root、免 Termux。
 
 ## 架构
 
@@ -16,13 +16,12 @@
 │  💬 对话 │ 🤝 助理 │ 🧩 目录     │
 │  AgentBridgeService（前台服务）   │
 ├────────────────────────────────┤
-│ FastAPI 桥 127.0.0.1:8000       │
+│ Kotlin NativeBridge 127.0.0.1:8000│
 │  Bearer token · WS 双向流       │
-│  内置 web_search 工具            │
-│  MCP 连接器（stdio + HTTP 双传输）│
+│  引导/目录/遥控/设备回执原生处理    │
 ├────────────────────────────────┤
-│ forge Agent（PRoot Ubuntu 24）  │
-│  纯标准库内核 · Policy 裁决一切   │
+│ NativeAgentEngine（Kotlin）      │
+│  模型路由 · Policy · 工具循环      │
 ├────────────────────────────────┤
 │ 设备工具：Accessibility+Shizuku  │
 │  只读直行 · 写操作确认气泡        │
@@ -31,7 +30,7 @@
 
 ## 与 forge 内核的关系（pin 机制）
 
-本仓只含手机侧：Kotlin 壳、Python 桥、rootfs/构建脚本与测试。
+本仓只含手机侧 Kotlin 壳/原生桥/Agent 核心；历史 Python Forge 源码仅用于桌面兼容和对照，不进入 APK 运行路径。
 Agent 内核 `forge/` 与 `bundles/` **不入库**，由 [`forge-pin.json`](forge-pin.json) 固定版本，
 [`scripts/fetch-forge.py`](scripts/fetch-forge.py) 拉取到 `build/forge-src`（rootfs 打包与冒烟测试共用同一份）。
 
@@ -55,10 +54,9 @@ rootfs 镜像（PC/WSL 一次性）：先 `fetch-forge.py`，再按 [docs/ROOTFS
 ## 验证
 
 ```bash
-python tools/verify-rootfs-layout.py   # PC 仿真 /opt/forge 布局：桥模块齐全 + 路由注册 + /health
-python tests/smoke_rt.py               # 离线契约检查
-python tests/smoke_assistant.py        # 助理模式/MCP（起真 uvicorn）
-# 其余：smoke_catalog / smoke_onboarding / smoke_remote / smoke_remote_host / e2e_remote
+./gradlew :app:testDebugUnitTest :app:assembleDebug
+adb install app/build/outputs/apk/debug/app-debug.apk
+# Python/rootfs 校验仅用于历史桌面兼容路径
 ```
 
 ## 目录
@@ -66,9 +64,10 @@ python tests/smoke_assistant.py        # 助理模式/MCP（起真 uvicorn）
 | 路径 | 内容 |
 |---|---|
 | `app/src/main/java/com/forge/android/` | Compose 壳（对话/助理/目录三 Tab）+ 桥服务 + Shizuku/无障碍 |
-| `bridge/forge_bridge.py` | FastAPI 桥：WS/SSE、Bearer 认证、工具分发 |
-| `bridge/mcp_connectors.py` + `mcp_remote.py` | MCP 运行时：stdio 子进程 + 官方远程 HTTP 双传输 |
-| `bridge/connector_catalog.py` | 47 服务预置目录（场景分组数据源） |
+| `app/src/main/java/com/forge/android/bridge/NativeBridgeServer.kt` | 原生 HTTP/WS、Bearer 认证、路由与回执 |
+| `app/src/main/java/com/forge/android/bridge/NativeAgentEngine.kt` | Kotlin Agent 核心：配置、模型路由、工具循环、会话日志、取消 |
+| `app/src/main/assets/connector_catalog.json` | 47 服务预置目录（Kotlin 原生场景分组数据源） |
+| `bridge/*.py` | 历史桌面兼容源码；Android 主路径不启动 Python |
 | `bridge/web_search_tools.py` | 内置联网搜索（多级降级，默认美国端点） |
 | `bridge/phone_tools.py` | 手机原生工具定义 |
 | `bridge/PROTOCOL.md` | 壳↔Agent 契约（含远程控制电脑预留 §6） |

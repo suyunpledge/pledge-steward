@@ -9,13 +9,10 @@ import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
-import okio.ByteString
 import com.forge.android.shizuku.ShizukuGate
 import com.forge.android.tools.DeviceTools
 import com.forge.android.shizuku.ForgeToolClient
@@ -24,20 +21,19 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * AgentBridgeService — 前台服务：chroot + Python 子进程 + WS 双向流。
+ * AgentBridgeService — 前台服务：原生 Kotlin bridge + 原生 Kotlin Agent。
  *
  * 生命周期：
- *   startService → ChrootManager.extractIfNeeded → PythonSupervisor.start
- *   → /health 就绪 → WS connect 127.0.0.1:8000/agent/ws → 发 ready
+ *   startService → NativeBridgeServer.start → NativeAgentEngine.start
+ *   → /health 就绪 → WS connect 127.0.0.1:8000/agent/ws
  *
- * 崩溃隔离（Operit Sidecar 思想）：Python 是子进程，崩了只影响当轮对话，
- *   Supervisor 指数退避自动重启；WS 断线自动重连（1s→2s→4s…30s 封顶）。
+ * Agent 循环在独立协程中运行，单轮失败不会杀死前台服务；WS 断线自动重连。
  */
 class AgentBridgeService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private lateinit var chroot: ProotManager
-    private lateinit var supervisor: PythonSupervisor
+    private lateinit var nativeBridge: NativeBridgeServer
+    private lateinit var agent: NativeAgentEngine
     private lateinit var shizukuGate: ShizukuGate
     lateinit var deviceTools: DeviceTools
 
@@ -62,9 +58,12 @@ class AgentBridgeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        chroot = ProotManager(this)
-        supervisor = PythonSupervisor(this, chroot)
-        // 灰度版接线（审计遗留 #2）：设备工具 + Shizuku 状态机
+        nativeBridge = NativeBridgeServer(this)
+        nativeBridge.start()
+        agent = NativeAgentEngine(this) { line -> nativeBridge.onAgentLine(line) }
+        nativeBridge.attachAgent { payload -> agent.send(payload) }
+        agent.start()
+        // 原生 Agent 的设备工具 + Shizuku 状态机
         shizukuGate = ShizukuGate { state ->
             Events.shizukuState.value=state
             emit(JSONObject().put("type", "shizuku_state").put("state", state))
@@ -127,18 +126,11 @@ class AgentBridgeService : Service() {
     }
 
     private suspend fun bootstrap() {
-        setState("extracting")
-        if (!chroot.extractIfNeeded()) {
-            setState("failed")
-            emit(JSONObject().put("type", "fatal").put("error", "rootfs 解包失败"))
-            return
-        }
         setState("booting")
-        supervisor.start()
-        // 等 /health（最多 60s：首次 uvicorn 冷启动 + forge import 都在里面）
+        // 等原生 Kotlin Agent 报告 ready。
         val ok = waitForHealth(timeoutSec = 60)
         if (!ok) {
-            emit(JSONObject().put("type", "fatal").put("error", "Python 桥未就绪（60s）"))
+            emit(JSONObject().put("type", "fatal").put("error", "Kotlin Agent 未就绪（60s）"))
             scheduleReconnect()
             return
         }
@@ -151,7 +143,10 @@ class AgentBridgeService : Service() {
             val ok = runCatching {
                 client.newCall(Request.Builder()
                     .url("http://127.0.0.1:8000/health").build())
-                    .execute().use { it.isSuccessful }
+                    .execute().use { response ->
+                        response.isSuccessful &&
+                            org.json.JSONObject(response.body?.string() ?: "{}").optString("status") == "ok"
+                    }
             }.getOrDefault(false)
             if (ok) return true
             delay(1000)
@@ -179,8 +174,8 @@ class AgentBridgeService : Service() {
                         "cancel_tool" -> deviceTools.cancel(obj.optString("call_id"))
                         "cancel_tools" -> deviceTools.cancelAll()
                     }
-                    // 灰度版接线：桥的设备工具请求 → Kotlin 双通道执行 →
-                    // postToolResult 回传（type=tool_call 的消费点）
+                    // Agent 的设备工具请求 → Kotlin 双通道执行 →
+                    // /tool/call 回传（type=tool_call 的消费点）
                     if (obj.optString("type") == "tool_call") {
                         deviceTools.handle(
                             obj.optString("call_id"),
@@ -217,11 +212,14 @@ class AgentBridgeService : Service() {
             reconnectAttempt++
             setState("restarting")
             delay(backoff)
-            // Python 也挂了的话 Supervisor 已在重启；这里只重连 WS
+            // Agent 在同一进程内隔离失败；这里只重连 WS
             if (runCatching {
                     client.newCall(Request.Builder()
                         .url("http://127.0.0.1:8000/health").build())
-                        .execute().use { it.isSuccessful }
+                        .execute().use { response ->
+                            response.isSuccessful &&
+                                org.json.JSONObject(response.body?.string() ?: "{}").optString("status") == "ok"
+                        }
                 }.getOrDefault(false)) {
                 connectWs()
                 return@launch
@@ -230,7 +228,7 @@ class AgentBridgeService : Service() {
         }
     }
 
-    /** UI → Python：发原始 JSON（type=run/ping/reset）。 */
+    /** UI → Kotlin Agent：发原始 JSON（type=run/ping/reset）。 */
     fun sendRaw(payload: String) {
         if (serviceState != "ready" || ws?.send(payload) != true)
             emit(JSONObject().put("type","error").put("error","桥未就绪或发送失败，请等待连接恢复；任务未排队"))
@@ -273,7 +271,7 @@ class AgentBridgeService : Service() {
             when (s) {
                 "ready" -> "forge 桥就绪"
                 "restarting" -> "桥重启中…"
-                "extracting" -> "首次解包 rootfs（约 1-2 分钟）"
+                "booting" -> "Kotlin Agent 启动中…"
                 else -> "forge bridge $s"
             })
     }
@@ -287,8 +285,8 @@ class AgentBridgeService : Service() {
         shizukuGate.stop()
         ForgeToolClient.unbind(this)
         scope.cancel()
-        supervisor.stop()
-        chroot.stop()
+        agent.stop()
+        nativeBridge.stop()
         super.onDestroy()
     }
 

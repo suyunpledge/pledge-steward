@@ -12,7 +12,7 @@ import rikka.shizuku.Shizuku
  * 铁律（用户架构定稿）：Shizuku 离线 ≠ App 不可用。
  *  状态：online（binder 通 + 权限授予）/ offline（未启动或断开，含重启后
  *  未重新激活）/ denied（用户拒绝）。
- *  状态流转 → DeviceTools 工具面变化 → POST /capabilities 刷新 Python 侧。
+ *  状态流转 → DeviceTools 工具面变化 → POST /capabilities 刷新 Kotlin Agent。
  */
 class ShizukuGate(private val onStateChanged: (String) -> Unit) {
 

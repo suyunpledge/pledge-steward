@@ -30,7 +30,7 @@ if [[ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then
 fi
 if [[ "${1:-}" != --repack ]]; then
 debootstrap --variant=minbase --arch=arm64 --foreign --components=main,universe \
-  --include=python3,python3-fastapi,python3-uvicorn,python3-websockets,ca-certificates \
+  --include=python3,ca-certificates \
   noble "$ROOT" "${FORGE_UBUNTU_PORTS:-http://ports.ubuntu.com/ubuntu-ports}"
 cp /usr/bin/qemu-aarch64-static "$ROOT/usr/bin/"
 chroot "$ROOT" /debootstrap/debootstrap --second-stage
@@ -39,10 +39,8 @@ mkdir -p "$ROOT/opt/forge" "$ROOT/opt/forge/workspace" "$ROOT/workspace" "$ROOT/
 chmod 1777 "$ROOT/tmp"
 # Stage the pinned forge kernel tree (scripts/fetch-forge.py output; no monorepo
 # checkout needed), excluding .git and the superseded forge-android directory.
-# Then overlay THIS repo bridge modules at the top level: forge_bridge imports its
-# siblings (bridge_tools/assistant_mode/onboarding/mcp_connectors/remote_client/...)
-# as flat top-level modules, so ALL bridge .py files must be staged — the old
-# two-file copy silently disabled assistant mode / onboarding / MCP on device.
+# Then overlay only the Python worker and its Forge tool adapter.  HTTP,
+# onboarding, catalog, MCP state and remote state are owned by Kotlin.
 [[ -f "$SRC/forge/loop.py" && -d "$SRC/bundles" ]] || {
   echo "forge kernel source missing under $SRC — run: python scripts/fetch-forge.py" >&2
   exit 1
@@ -51,7 +49,7 @@ chmod 1777 "$ROOT/tmp"
 mkdir "$ROOT/opt/forge.new"
 tar -C "$SRC" --exclude='./.git' --exclude='./forge-android' -cf - . |
   tar -xf - -C "$ROOT/opt/forge.new"
-cp "$STEWARD"/bridge/*.py "$ROOT/opt/forge.new/"
+cp "$STEWARD"/bridge/forge_worker.py "$STEWARD"/bridge/bridge_tools.py "$ROOT/opt/forge.new/"
 mv "$ROOT/opt/forge" "$ROOT/opt/forge.old"
 mv "$ROOT/opt/forge.new" "$ROOT/opt/forge"
 # Only disposable source in this fixed, resolved build root is replaced.
@@ -61,45 +59,20 @@ printf 'nameserver 1.1.1.1\n' > "$ROOT/etc/resolv.conf"
 chroot "$ROOT" /usr/bin/python3 -c '
 import sys
 sys.path.insert(0,"/opt/forge")
-import forge, fastapi, uvicorn, websockets, forge_bridge
+import forge, forge_worker
 from forge.loop import build_agent
-mods = ("assistant_mode","onboarding","mcp_connectors","remote_client")
-missing = [m for m in mods if m not in sys.modules]
-assert not missing, "bridge modules failed to import: %r" % missing
-paths = {getattr(r,"path","") for r in forge_bridge.app.routes}
-assert "/assistant/ask" in paths and "/onboarding/status" in paths, sorted(paths)
-print("arm64 runtime + full bridge module set passed")
+print("arm64 runtime + forge worker module passed")
 '
 chroot "$ROOT" /usr/bin/python3 - <<'PY'
-import os, socket, subprocess, time, urllib.request, json, asyncio, secrets
-import websockets
+import os, subprocess, json
 os.chdir('/opt/forge')
-token=secrets.token_hex(32)
-os.environ['FORGE_BRIDGE_TOKEN']=token
-with socket.socket() as sock:
-    sock.bind(('127.0.0.1',0))
-    port=sock.getsockname()[1]
-process=subprocess.Popen(['/usr/bin/python3','-m','uvicorn','forge_bridge:app',
-    '--host','127.0.0.1','--port',str(port),'--loop','asyncio'],stdout=subprocess.DEVNULL)
+process=subprocess.Popen(['/usr/bin/python3','/opt/forge/forge_worker.py'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
 try:
-    for attempt in range(120):
-        if process.poll() is not None: raise RuntimeError('arm64 bridge exited')
-        try:
-            with urllib.request.urlopen(f'http://127.0.0.1:{port}/health',timeout=1) as response:
-                assert json.load(response)['status']=='ok'
-            print('arm64 uvicorn real HTTP health passed',flush=True)
-            break
-        except OSError: time.sleep(.5)
-    else: raise RuntimeError('arm64 bridge health timeout')
-    async def check_session():
-        async with websockets.connect(f'ws://127.0.0.1:{port}/agent/ws?session=build-check',
-                extra_headers={'Authorization':'Bearer '+token},open_timeout=60) as ws:
-            assert json.loads(await asyncio.wait_for(ws.recv(),60))['type']=='ready'
-            await ws.send(json.dumps({'type':'ping'}))
-            assert json.loads(await asyncio.wait_for(ws.recv(),10))['type']=='pong'
-            print('arm64 real Agent construction + authenticated WS ready/ping passed',flush=True)
-    asyncio.run(check_session())
+    event=json.loads(process.stdout.readline())
+    assert event.get('type') == 'worker_ready', event
+    print('arm64 Forge worker stdio ready passed',flush=True)
 finally:
+    process.stdin.write(json.dumps({'type':'shutdown'})+'\n'); process.stdin.flush()
     process.terminate()
     try: process.wait(timeout=5)
     except subprocess.TimeoutExpired: process.kill();process.wait()
