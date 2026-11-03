@@ -72,8 +72,15 @@ fun CatalogScreen(onInstalled: () -> Unit) {
                 CircularProgressIndicator(Modifier.padding(32.dp))
             }
         } else {
-            // 每组独立折叠态（rememberSaveable 滚动重建不丢）
-            val expandedStates = rememberSaveable {
+            // 每组独立折叠态（滚动/重建不丢）。SnapshotStateMap 不能直接进
+            // Bundle——裸 rememberSaveable 会在状态保存时抛 IllegalArgumentException
+            // 炸掉整个进程（真机 11-02 23:35 崩溃栈实证），必须给显式 Saver。
+            val expandedStates = rememberSaveable(
+                saver = androidx.compose.runtime.saveable.Saver(
+                    save = { HashMap<String, Boolean>(it.toMap()) },
+                    restore = { restored -> mutableStateMapOf<String, Boolean>().apply { putAll(restored) } }
+                )
+            ) {
                 mutableStateMapOf<String, Boolean>()
             }
             LazyColumn(Modifier.padding(pad).padding(horizontal = 12.dp),
