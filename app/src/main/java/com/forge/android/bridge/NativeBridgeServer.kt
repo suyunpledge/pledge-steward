@@ -21,7 +21,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * The Android-native replacement for bridge/*.py's FastAPI surface.
+ * The Android-native replacement for the legacy Python bridge's FastAPI surface.
  *
  * It deliberately uses only the JDK socket APIs so the APK does not need a
  * second HTTP runtime.  The loopback server is authenticated with the same
@@ -125,6 +125,9 @@ class NativeBridgeServer(private val context: Context) {
             "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $accept\r\n\r\n")
             .toByteArray(StandardCharsets.ISO_8859_1))
         output.flush()
+        // 握手成功后取消读超时：45s 空闲断连叠加下方 finally 的协作取消，会在
+        // 空闲时误杀正在运行的任务。环回对端消亡总会触发读取错误，无需超时兜底。
+        socket.soTimeout = 0
         val client = WsClient(output)
         clients.add(client)
         val session = query(request.query, "session") ?: "default"
@@ -134,7 +137,7 @@ class NativeBridgeServer(private val context: Context) {
             while (running.get()) {
                 val frame = readFrame(input) ?: break
                 when (frame.first) {
-                    1 -> handleClientMessage(frame.second)
+                    1 -> handleClientMessage(String(frame.second, Charsets.UTF_8))
                     8 -> break
                     9 -> client.sendFrame(10, frame.second)
                 }
@@ -357,7 +360,8 @@ class NativeBridgeServer(private val context: Context) {
         val masked = (second and 0x80) != 0
         val mask = ByteArray(4)
         if (masked) input.readFully(mask)
-        val data = ByteArray(len.coerceIn(0, 2_000_000))
+        if (len < 0 || len > 2_000_000) return null   // 超限帧断开：静默截断会造成流错位
+        val data = ByteArray(len)
         input.readFully(data)
         if (masked) for (i in data.indices) data[i] = (data[i].toInt() xor mask[i % 4].toInt()).toByte()
         return opcode to data
