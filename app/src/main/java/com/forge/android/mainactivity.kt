@@ -63,11 +63,14 @@ class MainActivity : ComponentActivity() {
                     running.value = false
                     val answer = obj.optString("answer")
                     if (answer.isNotBlank()) append(ChatItem("agent", answer))
+                    // Cost only when the engine actually knows it; never "¥0" or "¥NaN".
+                    val cost = obj.optDouble("cost").takeIf { obj.has("cost") && !it.isNaN() }?.let { " · ¥$it" }.orEmpty()
                     append(ChatItem("summary",
-                    "${obj.optString("execution_state", "结束")} · ${obj.optInt("steps")} 步 · ¥${obj.optDouble("cost")}"))
+                    "${obj.optString("execution_state", "结束")} · ${obj.optInt("steps")} 步$cost"))
                 }
                 "run_failed" -> { running.value=false; append(ChatItem("error", obj.optString("error"))) }
                 "tool_call" -> append(ChatItem("summary", "正在调用 ${obj.optString("tool")}；设备输入需要单次确认"))
+                "agent.tool_started" -> append(ChatItem("summary", "正在${if (obj.optString("tool") == "web_search") "联网搜索" else "读取网页"}…"))
                 "agent.tool_completed" -> {
                     val state=obj.optString("execution_state")
                     val status=if(state=="unknown") "结果未知，请检查屏幕" else if(obj.optBoolean("ok")) "已返回，需核对实际效果" else "未完成"
@@ -101,8 +104,16 @@ class MainActivity : ComponentActivity() {
         var onboarded by remember { mutableStateOf<Boolean?>(null) }
         val ctx = androidx.compose.ui.platform.LocalContext.current
         LaunchedEffect(Unit) {
-            val st = withContext(Dispatchers.IO) { bridgeGetStatus(ctx) }
-            onboarded = !(st?.optBoolean("needed") ?: false)
+            // The bridge starts with the service, often after this first frame. An
+            // unreachable bridge is not "onboarding done": retry for ~15 s, then show
+            // onboarding (it reports its own connection errors) rather than an unusable chat.
+            var st: org.json.JSONObject? = null
+            for (attempt in 0 until 30) {
+                st = withContext(Dispatchers.IO) { bridgeGetStatus(ctx) }
+                if (st != null) break
+                kotlinx.coroutines.delay(500)
+            }
+            onboarded = st != null && !st.optBoolean("needed")
         }
         if (onboarded == null) {
             Box(Modifier.fillMaxSize()) {

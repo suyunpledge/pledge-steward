@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -58,6 +59,8 @@ class NativeAgentEngine(
     @Volatile private var activeJournal: File? = null
     private var cachedToolsKey: String? = null
     private var cachedTools: JSONArray? = null
+    // Host tools run inside the engine; device tools go to the app as tool_call.
+    private val web = WebTools { name -> connectorKey(name) }
 
     fun start() { emit(JSONObject().put("type", "agent_ready")) }
 
@@ -96,7 +99,10 @@ class NativeAgentEngine(
                     .put("ok", false).put("execution_state", "unknown")
                     .put("error", "invalid tool receipt"))
             }
-            "cancel", "cancel_tools" -> cancelActive()
+            // A closing socket for another session must not cancel this run.
+            "cancel", "cancel_tools" -> message.optString("session").let { s ->
+                if (s.isBlank() || s == activeSession) cancelActive()
+            }
             "reset" -> if (!busy) emit(JSONObject().put("type", "reset_ok"))
                 else emit(JSONObject().put("type", "error").put("error", "session busy"))
             "ping" -> emit(JSONObject().put("type", "pong").put("t", System.currentTimeMillis() / 1000.0))
@@ -200,20 +206,30 @@ class NativeAgentEngine(
                     }
                     val args = call.third
                     val callId = call.second.ifBlank { "tc-${System.nanoTime()}" }
-                    val result = CompletableDeferred<JSONObject>()
-                    pending[callId] = result
-                    emit(JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args).put("run_id", runId).put("task_id", taskId))
                     appendJournal(journal, JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args))
-                    val receipt = try {
-                        withTimeout(35_000) { result.await() }
-                    } catch (_: CancellationException) {
-                        JSONObject().put("ok", false).put("execution_state", "unknown").put("error", "cancelled")
-                    } catch (_: Throwable) {
-                        JSONObject().put("ok", false).put("execution_state", if (call.first.startsWith("android.ui.") || call.first == "android.app.launch") "unknown" else "not_started").put("error", "device tool timeout")
-                    } finally { pending.remove(callId) }
+                    val receipt = if (call.first in HOST_TOOLS) {
+                        // Host tools never reach the app: "tool_call" is what triggers device execution.
+                        emit(JSONObject().put("type", "agent.tool_started").put("call_id", callId).put("tool", call.first).put("run_id", runId).put("task_id", taskId))
+                        runHostTool(call.first, args)
+                    } else {
+                        val result = CompletableDeferred<JSONObject>()
+                        pending[callId] = result
+                        emit(JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args).put("run_id", runId).put("task_id", taskId))
+                        try {
+                            withTimeout(DEVICE_RECEIPT_MS) { result.await() }
+                        } catch (_: TimeoutCancellationException) {
+                            // TimeoutCancellationException is a CancellationException: catch it first.
+                            // Tell the app to drop the call so a late approval cannot still run it.
+                            emit(JSONObject().put("type", "cancel_tool").put("call_id", callId))
+                            JSONObject().put("ok", false).put("execution_state", AgentWire.timeoutState(call.first)).put("error", "device tool timeout")
+                        } catch (_: CancellationException) {
+                            JSONObject().put("ok", false).put("execution_state", "unknown").put("error", "cancelled")
+                        } finally { pending.remove(callId) }
+                    }
                     val state = receipt.optString("execution_state", if (receipt.optBoolean("ok")) "completed" else "unknown")
                     emit(JSONObject().put("type", "agent.tool_completed").put("tool", call.first).put("call_id", callId).put("ok", receipt.optBoolean("ok") && state != "unknown").put("execution_state", state).put("run_id", runId).put("task_id", taskId))
-                    messages += JSONObject().put("role", "tool").put("tool_call_id", callId).put("content", receipt.toString())
+                    // Pixels and other binary payloads never enter the model conversation.
+                    messages += JSONObject().put("role", "tool").put("tool_call_id", callId).put("content", AgentWire.modelReceipt(receipt).toString())
                     if (state == "unknown") {
                         finishDone(identity, finalAnswer, step + 1, "unknown")
                         return
@@ -242,7 +258,7 @@ class NativeAgentEngine(
             val row = rows.optJSONObject(i) ?: continue
             val config = row.optJSONObject("config") ?: continue
             val base = config.optString("baseURL").trim()
-            val key = config.optString("apiKey").trim()
+            val key = SecretBox.open(config.optString("apiKey").trim())
             val model = config.optJSONObject("model")?.optString("primary").orEmpty()
             val localNoKey = runCatching { URI(base).scheme == "http" && URI(base).host in setOf("127.0.0.1", "localhost") }.getOrDefault(false)
             if (base.isNotBlank() && (key.isNotBlank() || localNoKey))
@@ -279,7 +295,7 @@ class NativeAgentEngine(
      */
     private fun toolDefinitions(): JSONArray {
         synchronized(toolsLock) {
-            val sorted = capabilities.sorted()
+            val sorted = (capabilities + HOST_TOOLS).sorted()
             val key = sorted.joinToString(",")
             if (key == cachedToolsKey) cachedTools?.let { return it }
             val built = buildToolDefinitions(sorted)
@@ -290,6 +306,7 @@ class NativeAgentEngine(
     }
 
     private fun validateTool(name: String, args: JSONObject): String? {
+        if (name in HOST_TOOLS) return validateHostTool(name, args)
         if (!capabilities.contains(name)) return "capability unavailable"
         if (name in setOf("android.ui.click", "android.ui.swipe", "android.ui.input", "android.app.launch") && !approvalAvailable)
             return "device input approval is unavailable"
@@ -324,7 +341,7 @@ class NativeAgentEngine(
             val toolCalls = JSONArray()
             calls.forEach { call ->
                 toolCalls.put(JSONObject().put("id", call.second).put("type", "function")
-                    .put("function", JSONObject().put("name", call.first).put("arguments", call.third.toString())))
+                    .put("function", JSONObject().put("name", AgentWire.wireName(call.first)).put("arguments", call.third.toString())))
             }
             out.put("tool_calls", toolCalls)
         }
@@ -355,14 +372,15 @@ class NativeAgentEngine(
                 callId = "$baseId-$suffix"
                 suffix++
             }
-            out += Triple(fn.optString("name").trim(), callId, args)
+            out += Triple(AgentWire.resolveToolName(fn.optString("name"), capabilities + HOST_TOOLS), callId, args)
         }
         return out
     }
 
     private fun finishDone(identity: JSONObject, answer: String, steps: Int, state: String) {
         activeJournal?.let { appendJournal(it, JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("steps", steps)) }
-        emit(JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("answer", answer).put("steps", steps).put("cost", 0.0))
+        // No price table on the phone yet: omit cost rather than report ¥0.
+        emit(JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("answer", answer).put("steps", steps))
     }
 
     private fun finishFailure(identity: JSONObject, error: String, code: String) {
@@ -382,19 +400,60 @@ class NativeAgentEngine(
     private fun normalizeSession(raw: String): String =
         raw.trim().takeIf { it.matches(SESSION_PATTERN) } ?: "phone"
 
-    private fun emit(obj: JSONObject) { emitLine(obj.toString()) }
+    private fun emit(obj: JSONObject) {
+        // Every client receives every event; the session tells them whose run it is.
+        if (obj.has("run_id") && !obj.has("session")) obj.put("session", activeSession)
+        emitLine(obj.toString())
+    }
+
+    private suspend fun runHostTool(name: String, args: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+        runCatching {
+            when (name) {
+                "web_search" -> web.search(args.getString("query"), args.optInt("num", 5), args.optString("site", "all"), args.optString("region", "auto"))
+                else -> web.fetch(args.getString("url"), args.optInt("max_chars", 5000))
+            }.put("ok", true).put("execution_state", "completed")
+        }.getOrElse {
+            // A failed read changed nothing; the run continues and the model sees why.
+            JSONObject().put("ok", false).put("execution_state", "completed").put("error", "$name failed: ${it.message}")
+        }
+    }
+
+    private fun validateHostTool(name: String, args: JSONObject): String? {
+        fun str(key: String, max: Int, required: Boolean) = args.opt(key).let { v ->
+            if (v == null) !required else v is String && v.isNotBlank() && v.length <= max }
+        fun int(key: String, min: Int, max: Int) = args.opt(key).let { v -> v == null || (v is Int && v in min..max) }
+        return when (name) {
+            "web_search" -> if (args.keys().asSequence().all { it in setOf("query", "num", "site", "region") } &&
+                str("query", 500, true) && int("num", 1, 10) && str("site", 100, false) &&
+                (!args.has("region") || args.optString("region") in WebTools.REGIONS)) null else "invalid web_search arguments"
+            else -> if (args.keys().asSequence().all { it in setOf("url", "max_chars") } && str("url", 2048, true) &&
+                int("max_chars", 200, 50_000)) null else "invalid fetch_url arguments"
+        }
+    }
+
+    /** Search API keys come from installed connectors' environment (same names as desktop). */
+    private fun connectorKey(name: String): String? = runCatching {
+        val file = File(home, "mcp_connectors.json")
+        val rows = JSONObject(if (file.exists()) file.readText() else "{}").optJSONArray("connectors") ?: JSONArray()
+        (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
+            .filter { it.optBoolean("enabled", true) }
+            .firstNotNullOfOrNull { it.optJSONObject("env")?.optString(name)?.takeIf { v -> v.isNotBlank() } }
+            ?.let { SecretBox.open(it) }
+    }.getOrNull()
 
     private data class Provider(val baseUrl: String, val key: String, val model: String, val wire: String)
 
     companion object {
         private const val TAG = "NativeAgentEngine"
         private const val MAX_STEPS = 12
+        private const val DEVICE_RECEIPT_MS = 35_000L
+        val HOST_TOOLS = setOf("web_search", "fetch_url")
         private const val MAX_TOOL_CALLS_PER_STEP = 8
         private const val MAX_HISTORY_ITEMS = 100
         private const val MAX_HISTORY_CHARS = 120_000
         private const val MAX_MESSAGE_CHARS = 32_000
         private val SESSION_PATTERN = Regex("[A-Za-z0-9_-]{1,64}")
-        private const val SYSTEM_PROMPT = "You are Steward, a careful Android personal assistant. Use device tools only when available, ask for confirmation through the host for writes, inspect before and after actions, and never claim a business outcome from a backend receipt alone. Keep answers concise for a phone screen."
+        private const val SYSTEM_PROMPT = "You are Steward, a careful Android personal assistant. Use web_search and fetch_url for public information, device tools only when available, ask for confirmation through the host for writes, inspect before and after actions, and never claim a business outcome from a backend receipt alone. Keep answers concise for a phone screen."
 
         /** 纯函数：按给定顺序构建 tools 数组（顺序由调用方排序，字节稳定性由记忆化保证）。 */
         fun buildToolDefinitions(sortedNames: List<String>): JSONArray {
@@ -406,9 +465,21 @@ class NativeAgentEngine(
                 "android.ui.input" -> JSONObject().put("type", "object").put("properties", JSONObject().put("text", JSONObject().put("type", "string").put("maxLength", 4000))).put("required", JSONArray(listOf("text")))
                 "android.app.launch" -> JSONObject().put("type", "object").put("properties", JSONObject().put("package", JSONObject().put("type", "string"))).put("required", JSONArray(listOf("package")))
                 "android.screen.capture" -> JSONObject().put("type", "object").put("properties", JSONObject().put("max_side", integerSchema(320, 1440)))
+                "web_search" -> JSONObject().put("type", "object").put("properties", JSONObject()
+                    .put("query", JSONObject().put("type", "string").put("description", "Search words; site: and quotes work."))
+                    .put("num", integerSchema(1, 10).put("description", "Results per region, default 5."))
+                    .put("site", JSONObject().put("type", "string").put("description", "Optional: zhihu, xiaohongshu, weixin, bilibili, github, reddit, stackoverflow, wikipedia, or a domain."))
+                    .put("region", JSONObject().put("type", "string").put("enum", JSONArray(WebTools.REGIONS))
+                        .put("description", "auto (Chinese query -> Chinese web, else US/international), cn, global or both.")))
+                    .put("required", JSONArray(listOf("query")))
+                "fetch_url" -> JSONObject().put("type", "object").put("properties", JSONObject()
+                    .put("url", JSONObject().put("type", "string").put("description", "Full http(s) address, e.g. from web_search."))
+                    .put("max_chars", integerSchema(200, 50_000).put("description", "Characters of page text, default 5000.")))
+                    .put("required", JSONArray(listOf("url")))
                 else -> JSONObject().put("type", "object").put("properties", JSONObject())
             }
-            out.put(JSONObject().put("type", "function").put("function", JSONObject().put("name", name).put("description", toolDescription(name)).put("parameters", schema)))
+            // Wire names use underscores: OpenAI-compatible APIs reject dots in function names.
+            out.put(JSONObject().put("type", "function").put("function", JSONObject().put("name", AgentWire.wireName(name)).put("description", toolDescription(name)).put("parameters", schema)))
         }
         return out
     }
@@ -421,6 +492,8 @@ class NativeAgentEngine(
         "android.device.info" -> "Read Android device model, SDK and screen dimensions."
         "android.app.list" -> "List launchable installed Android packages."
         "android.ui.input" -> "Replace the currently focused non-password input after approval."
+        "web_search" -> "Search the web; returns titles, links and snippets. Read promising pages with fetch_url."
+        "fetch_url" -> "Read a public web page as plain text (menus and scripts removed). Local and private addresses are refused."
         else -> "Android device operation requiring one-time approval and post-action inspection."
     }
     }

@@ -17,7 +17,8 @@ class NativeAgentEngineTest {
     fun toolDefinitions_areSorted_andOrderStable() {
         val a = NativeAgentEngine.buildToolDefinitions(listOf("android.ui.click", "android.screen.capture", "android.app.launch").sorted())
         val b = NativeAgentEngine.buildToolDefinitions(listOf("android.app.launch", "android.screen.capture", "android.ui.click").sorted())
-        assertEquals(listOf("android.app.launch", "android.screen.capture", "android.ui.click"), names(a))
+        // Wire names use underscores (OpenAI-compatible APIs reject dots); order follows internal names.
+        assertEquals(listOf("android_app_launch", "android_screen_capture", "android_ui_click"), names(a))
         assertEquals(names(a), names(b))
     }
 

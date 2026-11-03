@@ -228,10 +228,17 @@ class DeviceTools(
         val options=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
         android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,options)
         if(options.outWidth<=0 || options.outHeight<=0) return fail("Invalid screenshot payload")
+        // Pixels stay on the device: a 1080px PNG is 1-2 MB of base64, over the receipt
+        // limit and useless as text to the model. Keep the last few captures for the UI
+        // or a future vision call, referenced by file name.
+        val dir=java.io.File(context.filesDir,"forge-home/captures").apply { mkdirs() }
+        val file=java.io.File(dir,"capture-${System.currentTimeMillis()}.png")
+        file.writeBytes(bytes)
+        dir.listFiles()?.sortedByDescending { it.name }?.drop(5)?.forEach { it.delete() }
         return ok(screenInfo().put("source",source)
             .put("image_width",options.outWidth).put("image_height",options.outHeight)
-            .put("coordinate_note","Image may be scaled; inspect current screen before input. Rotation invalidates earlier coordinates.")
-            .put("base64_png",b64))
+            .put("image_file",file.name).put("image_bytes",bytes.size)
+            .put("coordinate_note","Image may be scaled; inspect current screen before input. Rotation invalidates earlier coordinates."))
     }
     private fun screenMetrics(): android.util.DisplayMetrics {
         val dm=android.util.DisplayMetrics()

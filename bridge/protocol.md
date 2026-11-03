@@ -61,7 +61,7 @@ Android 对临时网络故障最多补发一次相同回执，不重新执行设
 未知结果须重新观察并由用户重新确认，不能声称 exactly-once。
 
 screen.inspect 返回 xml/source/foreground_package/screen_width/screen_height/coordinate_space；无障碍树标明 enabled/editable/focused/password，密码文本与描述隐藏。
-capture 返回 base64_png/source/image_width/image_height 及上述屏幕尺寸，max_side限制320～1440。
+capture 返回 image_file/image_bytes/source/image_width/image_height 及上述屏幕尺寸，max_side限制320～1440。像素只存设备本地（forge-home/captures，保留最近 5 张），不进回执、不进模型对话；引擎侧 AgentWire.modelReceipt 另行剔除任何 base64/图片字段。
 坐标为真实屏幕像素；缩小的截图不能直接作为点击坐标，应结合 device.info 的原始屏幕尺寸换算。
 screen.capture 仍是文本工具结果；本轮没有为共享 Agent 增加多模态图片注入，不能宣称模型已能直接理解 PNG。优先使用 UI 树定位，旋转后重新观察。
 ui.input 替换当前焦点输入框的内容，不是追加键盘输入；无焦点、禁用或密码输入框拒绝派发。

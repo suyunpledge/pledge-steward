@@ -159,9 +159,10 @@ class NativeBridgeServer(private val context: Context) {
                 }
             }
         } finally {
-            // A closed app socket is cooperative cancellation for the active
-            // Agent run; never leave a device call running headlessly.
-            agentSender?.invoke(JSONObject().put("type", "cancel").toString())
+            // A closed app socket is cooperative cancellation for its own session's
+            // run; never leave a device call running headlessly, never cancel another
+            // screen's task because this one went away.
+            agentSender?.invoke(JSONObject().put("type", "cancel").put("session", session).toString())
             clients.remove(client)
             activeSessions.remove(session)
             client.close()
@@ -173,7 +174,7 @@ class NativeBridgeServer(private val context: Context) {
         val kind = obj.optString("type")
         when (kind) {
             "run", "cancel", "cancel_tools", "reset", "ping", "tool_result" -> {
-                if (kind == "run") obj.put("session", session)
+                if (kind == "run" || kind == "cancel" || kind == "cancel_tools") obj.put("session", session)
                 if (agentSender?.invoke(obj.toString()) != true) {
                     broadcast(JSONObject().put("type", "error").put("error", "Native Agent unavailable").toString())
                 }
@@ -196,8 +197,8 @@ class NativeBridgeServer(private val context: Context) {
             request.path == "/capabilities" && request.method == "POST" -> {
                 if (body == null) return 400 to JSONObject().put("detail", "invalid JSON body")
                 capabilities.clear(); body.optJSONArray("tools")?.let { a -> for (i in 0 until a.length()) capabilities.add(a.optString(i)) }
-                approval = body?.optBoolean("approval", false) ?: false
-                shizuku = body?.optString("shizuku", "offline") ?: "offline"
+                approval = body.optBoolean("approval", false)
+                shizuku = body.optString("shizuku", "offline")
                 agentSender?.invoke(JSONObject().put("type", "capabilities")
                     .put("tools", JSONArray(capabilitySnapshot())).put("approval", approval).toString())
                 200 to JSONObject().put("registered", JSONArray(capabilitySnapshot())).put("shizuku", shizuku)
@@ -208,7 +209,7 @@ class NativeBridgeServer(private val context: Context) {
                 val okValue = body?.opt("ok")
                 if (callId.isBlank() || okValue !is Boolean || (state.isNotBlank() && state !in setOf("completed", "not_started", "unknown")))
                     422 to JSONObject().put("detail", "invalid tool receipt")
-                else if (agentSender?.invoke(body!!.put("type", "tool_result").toString()) != true)
+                else if (agentSender?.invoke(body.put("type", "tool_result").toString()) != true)
                     503 to JSONObject().put("detail", "Native Agent unavailable")
                 else 200 to JSONObject().put("accepted", true)
             }
@@ -269,7 +270,7 @@ class NativeBridgeServer(private val context: Context) {
         val data = runCatching { JSONObject(if (patchFile.exists()) patchFile.readText() else "{}") }.getOrDefault(JSONObject())
         val rows = data.optJSONArray("rows") ?: JSONArray().also { data.put("rows", it) }
         val config = JSONObject().put("wire", "openai").put("baseURL", v.optString("baseURL"))
-            .put("apiKey", key).put("keyless", v.optBoolean("keyless", false))
+            .put("apiKey", SecretBox.seal(key)).put("keyless", v.optBoolean("keyless", false))
             .put("model", JSONObject().put("primary", v.optJSONArray("models")?.optString(0)).put("options", v.optJSONArray("models")))
         var replaced = false
         for (i in 0 until rows.length()) if (rows.optJSONObject(i)?.optString("id") == id) { rows.put(i, JSONObject().put("id", id).put("name", "provider:$id").put("config", config)); replaced = true }
@@ -328,7 +329,7 @@ class NativeBridgeServer(private val context: Context) {
         val fields = auth.optJSONArray("fields") ?: JSONArray()
         for (i in 0 until fields.length()) {
             val name = fields.optJSONObject(i)?.optString("env").orEmpty()
-            if (name.isNotBlank()) env.put(name, credentials.optString(name, ""))
+            if (name.isNotBlank()) env.put(name, SecretBox.seal(credentials.optString(name, "")))
         }
         return upsertConnector(JSONObject().put("name", id)
             .put("command", item.optJSONArray("command") ?: JSONArray())
