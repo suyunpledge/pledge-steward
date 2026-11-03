@@ -155,10 +155,12 @@ class AgentBridgeService : Service() {
     }
 
     private fun connectWs() {
+        if (serviceState == "idle") return
         setState("connecting")
         val req = Request.Builder().url("ws://127.0.0.1:8000/agent/ws?session=phone").build()
         ws = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (webSocket !== ws || serviceState == "idle") { webSocket.close(1000, "stale"); return }
                 synchronized(capabilityLock) { lastCapabilities=null }
                 emit(JSONObject().put("type", "bridge_connected"))
                 reportCapabilities()   // 每次连接同步真实工具面
@@ -188,10 +190,12 @@ class AgentBridgeService : Service() {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "ws failure: ${t.message}")
+                if (webSocket === ws) ws = null
                 scheduleReconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (webSocket === ws) ws = null
                 scheduleReconnect()
             }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

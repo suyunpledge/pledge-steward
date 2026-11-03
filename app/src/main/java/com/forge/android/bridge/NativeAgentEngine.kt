@@ -9,6 +9,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -19,6 +22,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.URI
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -42,6 +46,8 @@ class NativeAgentEngine(
         .callTimeout(150, TimeUnit.SECONDS)
         .build()
     private val home = File(context.filesDir, "forge-home").apply { mkdirs() }
+    private val runLock = Any()
+    private val toolsLock = Any()
     private val capabilities = ConcurrentHashMap.newKeySet<String>()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
     @Volatile private var approvalAvailable = false
@@ -49,27 +55,36 @@ class NativeAgentEngine(
     @Volatile private var activeJob: Job? = null
     @Volatile private var activeSession = "phone"
     @Volatile private var activeCall: okhttp3.Call? = null
-    private var activeJournal: File? = null
+    @Volatile private var activeJournal: File? = null
     private var cachedToolsKey: String? = null
     private var cachedTools: JSONArray? = null
 
     fun start() { emit(JSONObject().put("type", "agent_ready")) }
 
     fun stop() {
+        activeCall?.cancel()
         activeJob?.cancel()
         pending.values.forEach { it.cancel() }
         pending.clear()
+        activeCall = null
+        activeJournal = null
+        busy = false
         scope.cancel()
     }
 
     /** Accepts the bridge command envelope used by the Android WebSocket. */
     fun send(payload: String): Boolean {
+        if (!scope.isActive) return false
         val message = runCatching { JSONObject(payload) }.getOrNull() ?: return false
         when (message.optString("type")) {
             "capabilities" -> {
-                capabilities.clear()
-                val tools = message.optJSONArray("tools") ?: JSONArray()
-                for (i in 0 until tools.length()) capabilities.add(tools.optString(i))
+                synchronized(toolsLock) {
+                    capabilities.clear()
+                    val tools = message.optJSONArray("tools") ?: JSONArray()
+                    for (i in 0 until tools.length()) capabilities.add(tools.optString(i))
+                    cachedToolsKey = null
+                    cachedTools = null
+                }
                 approvalAvailable = message.optBoolean("approval", false)
             }
             "tool_result" -> {
@@ -88,15 +103,20 @@ class NativeAgentEngine(
             "run" -> {
                 val task = message.optString("task", "")
                 val history = message.optJSONArray("history") ?: JSONArray()
-                val session = message.optString("session", "phone")
+                val session = normalizeSession(message.optString("session", "phone"))
                 if (task.isBlank() || task.length > 32000) {
                     emit(JSONObject().put("type", "error").put("error", "invalid task/history"))
-                } else if (busy) {
-                    emit(JSONObject().put("type", "error").put("error", "session busy"))
                 } else {
-                    activeSession = session
-                    busy = true
-                    activeJob = scope.launch { runTask(task, history, session) }
+                    val accepted = synchronized(runLock) {
+                        if (busy || !scope.isActive) false
+                        else {
+                            activeSession = session
+                            busy = true
+                            activeJob = scope.launch { runTask(task, history, session) }
+                            true
+                        }
+                    }
+                    if (!accepted) emit(JSONObject().put("type", "error").put("error", "session busy"))
                 }
             }
             else -> emit(JSONObject().put("type", "error").put("error", "unknown agent message"))
@@ -121,7 +141,8 @@ class NativeAgentEngine(
         val runId = UUID.randomUUID().toString().replace("-", "")
         val taskId = UUID.randomUUID().toString().replace("-", "")
         val identity = JSONObject().put("run_id", runId).put("task_id", taskId)
-        val journal = File(home, "sessions/phone-$session.jsonl").apply { parentFile?.mkdirs() }
+        val safeSession = normalizeSession(session)
+        val journal = File(home, "sessions/phone-$safeSession.jsonl").apply { parentFile?.mkdirs() }
         activeJournal = journal
         try {
             emit(JSONObject().put("type", "run_started").put("entry", "android").put("protocol_version", 1).put("run_id", runId).put("task_id", taskId))
@@ -132,21 +153,28 @@ class NativeAgentEngine(
             }
             val messages = mutableListOf<JSONObject>()
             messages += JSONObject().put("role", "system").put("content", SYSTEM_PROMPT)
-            for (i in 0 until history.length()) {
+            var historyChars = 0
+            val historyStart = (history.length() - MAX_HISTORY_ITEMS).coerceAtLeast(0)
+            for (i in historyStart until history.length()) {
                 val row = history.optJSONObject(i) ?: continue
                 val role = row.optString("role")
-                val content = row.optString("content", row.optString("text"))
-                if (role in setOf("user", "assistant", "system") && content.isNotBlank()) {
-                    messages += JSONObject().put("role", role).put("content", content.take(32000))
+                val content = row.optString("content", row.optString("text")).take(32000)
+                if (role in setOf("user", "assistant", "system") && content.isNotBlank() && historyChars < MAX_HISTORY_CHARS) {
+                    val bounded = content.take(MAX_HISTORY_CHARS - historyChars)
+                    messages += JSONObject().put("role", role).put("content", bounded)
+                    historyChars += bounded.length
                 }
             }
             messages += JSONObject().put("role", "user").put("content", task)
-            journal.appendText(JSONObject().put("type", "run_started").put("run_id", runId).put("task_id", taskId).put("task", task).toString() + "\n")
+            appendJournal(journal, JSONObject().put("type", "run_started").put("run_id", runId).put("task_id", taskId).put("task", task))
 
             var finalAnswer = ""
             var completed = false
+            var steps = 0
             for (step in 0 until MAX_STEPS) {
+                steps = step + 1
                 val response = requestModel(provider, messages, toolDefinitions())
+                currentCoroutineContext().ensureActive()
                 if (response.first == null) {
                     finishFailure(identity, response.second ?: "模型请求失败", "model_request_failed")
                     return
@@ -157,8 +185,8 @@ class NativeAgentEngine(
                     finalAnswer = content
                     emit(JSONObject().put("type", "agent.assistant_message").put("text", content).put("step", step).put("run_id", runId).put("task_id", taskId))
                 }
-                val calls = toolCalls(message)
-                messages += sanitizeAssistantMessage(message)
+                val calls = normalizeToolCalls(message, runId, step)
+                messages += sanitizeAssistantMessage(message, calls)
                 if (calls.isEmpty()) {
                     completed = true
                     break
@@ -175,7 +203,7 @@ class NativeAgentEngine(
                     val result = CompletableDeferred<JSONObject>()
                     pending[callId] = result
                     emit(JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args).put("run_id", runId).put("task_id", taskId))
-                    journal.appendText(JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args).toString() + "\n")
+                    appendJournal(journal, JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args))
                     val receipt = try {
                         withTimeout(35_000) { result.await() }
                     } catch (_: CancellationException) {
@@ -192,9 +220,9 @@ class NativeAgentEngine(
                     }
                 }
             }
-            finishDone(identity, finalAnswer, MAX_STEPS, if (completed) "final" else "max_steps")
+            finishDone(identity, finalAnswer, steps, if (completed) "final" else "max_steps")
         } catch (_: CancellationException) {
-            activeJournal?.appendText(JSONObject().put("type", "run_failed").put("execution_state", "cancelled").put("run_id", runId).toString() + "\n")
+            appendJournal(journal, JSONObject().put("type", "run_failed").put("execution_state", "cancelled").put("run_id", runId))
             emit(JSONObject().put("type", "run_failed").put("execution_state", "cancelled").put("error", "任务已取消").put("run_id", runId).put("task_id", taskId))
         } catch (t: Throwable) {
             Log.e(TAG, "native agent run failed", t)
@@ -202,6 +230,8 @@ class NativeAgentEngine(
         } finally {
             busy = false
             activeJob = null
+            activeCall = null
+            activeJournal = null
         }
     }
 
@@ -214,7 +244,8 @@ class NativeAgentEngine(
             val base = config.optString("baseURL").trim()
             val key = config.optString("apiKey").trim()
             val model = config.optJSONObject("model")?.optString("primary").orEmpty()
-            if (base.isNotBlank() && (key.isNotBlank() || base.startsWith("http://127.0.0.1")))
+            val localNoKey = runCatching { URI(base).scheme == "http" && URI(base).host in setOf("127.0.0.1", "localhost") }.getOrDefault(false)
+            if (base.isNotBlank() && (key.isNotBlank() || localNoKey))
                 return Provider(base, key, model.ifBlank { "gpt-4o-mini" }, config.optString("wire", "openai"))
         }
         return null
@@ -247,13 +278,15 @@ class NativeAgentEngine(
      * 是并发 Set（顺序不定），故这里按名称排序并记忆化构建结果。
      */
     private fun toolDefinitions(): JSONArray {
-        val sorted = capabilities.sorted()
-        val key = sorted.joinToString(",")
-        if (key == cachedToolsKey) cachedTools?.let { return it }
-        val built = buildToolDefinitions(sorted)
-        cachedToolsKey = key
-        cachedTools = built
-        return built
+        synchronized(toolsLock) {
+            val sorted = capabilities.sorted()
+            val key = sorted.joinToString(",")
+            if (key == cachedToolsKey) cachedTools?.let { return it }
+            val built = buildToolDefinitions(sorted)
+            cachedToolsKey = key
+            cachedTools = built
+            return built
+        }
     }
 
     private fun validateTool(name: String, args: JSONObject): String? {
@@ -279,44 +312,75 @@ class NativeAgentEngine(
      * 各厂私有注记）绝不能原样回传——部分服务商会拒绝，且回放历史的任何字节
      * 差异都会让后续所有轮的前缀缓存失效。
      */
-    private fun sanitizeAssistantMessage(message: JSONObject): JSONObject {
+    private fun sanitizeAssistantMessage(message: JSONObject, calls: List<Triple<String, String, JSONObject>>): JSONObject {
         val out = JSONObject().put("role", "assistant")
         val content = message.opt("content")
-        out.put("content", if (content is String || content is JSONArray) content else JSONObject.NULL)
-        message.optJSONArray("tool_calls")?.let { out.put("tool_calls", it) }
+        out.put("content", when (content) {
+            is String -> content.take(MAX_MESSAGE_CHARS)
+            is JSONArray -> textContent(message)
+            else -> JSONObject.NULL
+        })
+        if (calls.isNotEmpty()) {
+            val toolCalls = JSONArray()
+            calls.forEach { call ->
+                toolCalls.put(JSONObject().put("id", call.second).put("type", "function")
+                    .put("function", JSONObject().put("name", call.first).put("arguments", call.third.toString())))
+            }
+            out.put("tool_calls", toolCalls)
+        }
         return out
     }
 
     private fun textContent(message: JSONObject): String {
         val content = message.opt("content") ?: return ""
         return when (content) {
-            is String -> content
-            is JSONArray -> buildString { for (i in 0 until content.length()) append(content.optJSONObject(i)?.optString("text").orEmpty()) }
+            is String -> content.take(MAX_MESSAGE_CHARS)
+            is JSONArray -> buildString { for (i in 0 until content.length()) append(content.optJSONObject(i)?.optString("text").orEmpty()) }.take(MAX_MESSAGE_CHARS)
             else -> ""
         }
     }
 
-    private fun toolCalls(message: JSONObject): List<Triple<String, String, JSONObject>> {
+    private fun normalizeToolCalls(message: JSONObject, runId: String, step: Int): List<Triple<String, String, JSONObject>> {
         val out = mutableListOf<Triple<String, String, JSONObject>>()
         val calls = message.optJSONArray("tool_calls") ?: return out
-        for (i in 0 until calls.length()) {
+        val seen = mutableSetOf<String>()
+        for (i in 0 until minOf(calls.length(), MAX_TOOL_CALLS_PER_STEP)) {
             val call = calls.optJSONObject(i) ?: continue
             val fn = call.optJSONObject("function") ?: continue
             val args = runCatching { JSONObject(fn.optString("arguments", "{}")) }.getOrDefault(JSONObject())
-            out += Triple(fn.optString("name"), call.optString("id"), args)
+            val baseId = call.optString("id").trim().ifBlank { "tc-${runId.take(8)}-$step-$i" }
+            var callId = baseId
+            var suffix = 1
+            while (!seen.add(callId)) {
+                callId = "$baseId-$suffix"
+                suffix++
+            }
+            out += Triple(fn.optString("name").trim(), callId, args)
         }
         return out
     }
 
     private fun finishDone(identity: JSONObject, answer: String, steps: Int, state: String) {
-        activeJournal?.appendText(JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("steps", steps).toString() + "\n")
+        activeJournal?.let { appendJournal(it, JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("steps", steps)) }
         emit(JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("answer", answer).put("steps", steps).put("cost", 0.0))
     }
 
     private fun finishFailure(identity: JSONObject, error: String, code: String) {
-        activeJournal?.appendText(JSONObject(identity.toString()).put("type", "run_failed").put("error_code", code).toString() + "\n")
+        activeJournal?.let { appendJournal(it, JSONObject(identity.toString()).put("type", "run_failed").put("error_code", code)) }
         emit(JSONObject(identity.toString()).put("type", "run_failed").put("execution_state", "failed").put("error", error).put("error_code", code))
     }
+
+    private fun appendJournal(file: File, record: JSONObject) {
+        runCatching {
+            synchronized(file) {
+                file.parentFile?.mkdirs()
+                file.appendText(record.toString() + "\n")
+            }
+        }.onFailure { Log.w(TAG, "session journal write failed", it) }
+    }
+
+    private fun normalizeSession(raw: String): String =
+        raw.trim().takeIf { it.matches(SESSION_PATTERN) } ?: "phone"
 
     private fun emit(obj: JSONObject) { emitLine(obj.toString()) }
 
@@ -325,6 +389,11 @@ class NativeAgentEngine(
     companion object {
         private const val TAG = "NativeAgentEngine"
         private const val MAX_STEPS = 12
+        private const val MAX_TOOL_CALLS_PER_STEP = 8
+        private const val MAX_HISTORY_ITEMS = 100
+        private const val MAX_HISTORY_CHARS = 120_000
+        private const val MAX_MESSAGE_CHARS = 32_000
+        private val SESSION_PATTERN = Regex("[A-Za-z0-9_-]{1,64}")
         private const val SYSTEM_PROMPT = "You are Steward, a careful Android personal assistant. Use device tools only when available, ask for confirmation through the host for writes, inspect before and after actions, and never claim a business outcome from a backend receipt alone. Keep answers concise for a phone screen."
 
         /** 纯函数：按给定顺序构建 tools 数组（顺序由调用方排序，字节稳定性由记忆化保证）。 */

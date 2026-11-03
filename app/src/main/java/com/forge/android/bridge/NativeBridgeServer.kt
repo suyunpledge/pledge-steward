@@ -12,10 +12,12 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -33,9 +35,11 @@ class NativeBridgeServer(private val context: Context) {
     private val running = AtomicBoolean(false)
     private val pool = Executors.newCachedThreadPool()
     private val clients = CopyOnWriteArraySet<WsClient>()
+    private val activeSessions = ConcurrentHashMap.newKeySet<String>()
     private val capabilities = Collections.synchronizedSet(linkedSetOf<String>())
-    private var approval = false
-    private var shizuku = "offline"
+    private val stateLock = Any()
+    @Volatile private var approval = false
+    @Volatile private var shizuku = "offline"
     private var server: ServerSocket? = null
     @Volatile private var agentSender: ((String) -> Boolean)? = null
     @Volatile private var agentReady = false
@@ -66,6 +70,7 @@ class NativeBridgeServer(private val context: Context) {
         if (!running.compareAndSet(true, false)) return
         clients.toList().forEach { it.close() }
         clients.clear()
+        activeSessions.clear()
         runCatching { server?.close() }
         server = null
         agentSender = null
@@ -80,7 +85,7 @@ class NativeBridgeServer(private val context: Context) {
         if (obj.optString("type") == "agent_ready") {
             agentReady = true
             agentSender?.invoke(JSONObject().put("type", "capabilities")
-                .put("tools", JSONArray(capabilities.toList())).put("approval", approval).toString())
+                .put("tools", JSONArray(capabilitySnapshot())).put("approval", approval).toString())
         }
         broadcast(obj.toString())
     }
@@ -118,26 +123,37 @@ class NativeBridgeServer(private val context: Context) {
 
     private fun handleWebSocket(socket: Socket, input: BufferedInputStream,
                                 output: BufferedOutputStream, request: HttpRequest) {
-        val key = request.headers["sec-websocket-key"] ?: return
+        val session = query(request.query, "session") ?: "default"
+        if (!session.matches(SESSION_PATTERN)) {
+            writeJson(output, 422, JSONObject().put("detail", "invalid session")); return
+        }
+        if (!activeSessions.add(session)) {
+            writeJson(output, 409, JSONObject().put("detail", "session already connected")); return
+        }
+        val key = request.headers["sec-websocket-key"] ?: run { activeSessions.remove(session); return }
         val accept = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
             .digest((key + WS_GUID).toByteArray(StandardCharsets.ISO_8859_1)))
-        output.write(("HTTP/1.1 101 Switching Protocols\r\n" +
-            "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $accept\r\n\r\n")
-            .toByteArray(StandardCharsets.ISO_8859_1))
-        output.flush()
+        try {
+            output.write(("HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $accept\r\n\r\n")
+                .toByteArray(StandardCharsets.ISO_8859_1))
+            output.flush()
+        } catch (t: Throwable) {
+            activeSessions.remove(session)
+            throw t
+        }
         // 握手成功后取消读超时：45s 空闲断连叠加下方 finally 的协作取消，会在
         // 空闲时误杀正在运行的任务。环回对端消亡总会触发读取错误，无需超时兜底。
         socket.soTimeout = 0
-        val client = WsClient(output)
+        val client = WsClient(socket, output)
         clients.add(client)
-        val session = query(request.query, "session") ?: "default"
-        client.send(JSONObject().put("type", "ready").put("session", session)
-            .put("tools", JSONArray(capabilities.toList())).toString())
         try {
+            client.send(JSONObject().put("type", "ready").put("session", session)
+                .put("tools", JSONArray(capabilitySnapshot())).toString())
             while (running.get()) {
                 val frame = readFrame(input) ?: break
                 when (frame.first) {
-                    1 -> handleClientMessage(String(frame.second, Charsets.UTF_8))
+                    1 -> handleClientMessage(String(frame.second, Charsets.UTF_8), session)
                     8 -> break
                     9 -> client.sendFrame(10, frame.second)
                 }
@@ -147,40 +163,44 @@ class NativeBridgeServer(private val context: Context) {
             // Agent run; never leave a device call running headlessly.
             agentSender?.invoke(JSONObject().put("type", "cancel").toString())
             clients.remove(client)
+            activeSessions.remove(session)
             client.close()
         }
     }
 
-    private fun handleClientMessage(text: String) {
+    private fun handleClientMessage(text: String, session: String) {
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
         val kind = obj.optString("type")
         when (kind) {
-            "run", "cancel", "cancel_tools", "reset", "ping" -> {
+            "run", "cancel", "cancel_tools", "reset", "ping", "tool_result" -> {
+                if (kind == "run") obj.put("session", session)
                 if (agentSender?.invoke(obj.toString()) != true) {
                     broadcast(JSONObject().put("type", "error").put("error", "Native Agent unavailable").toString())
                 }
             }
             "refresh_tools" -> broadcast(JSONObject().put("type", "capabilities")
-                .put("tools", JSONArray(capabilities.toList())).toString())
+                .put("tools", JSONArray(capabilitySnapshot())).toString())
             else -> broadcast(JSONObject().put("type", "error").put("error", "unknown type").toString())
         }
     }
 
     private fun broadcast(text: String) { clients.toList().forEach { runCatching { it.send(text) } } }
+    private fun capabilitySnapshot(): List<String> = synchronized(capabilities) { capabilities.toList() }
 
     private fun route(request: HttpRequest): Pair<Int, JSONObject> {
         val body = request.body.takeIf { it.isNotEmpty() }?.let { runCatching { JSONObject(String(it, Charsets.UTF_8)) }.getOrNull() }
         return when {
             request.path == "/health" && request.method == "GET" -> 200 to JSONObject()
             .put("status", if (agentReady) "ok" else "starting").put("native", true).put("agent_ready", agentReady)
-                .put("shizuku_tools", JSONArray(capabilities.filter { it in setOf("android.screen.capture", "android.app.list", "android.app.launch") }))
+                .put("shizuku_tools", JSONArray(capabilitySnapshot().filter { it in setOf("android.screen.capture", "android.app.list", "android.app.launch") }))
             request.path == "/capabilities" && request.method == "POST" -> {
-                capabilities.clear(); body?.optJSONArray("tools")?.let { a -> for (i in 0 until a.length()) capabilities.add(a.optString(i)) }
+                if (body == null) return 400 to JSONObject().put("detail", "invalid JSON body")
+                capabilities.clear(); body.optJSONArray("tools")?.let { a -> for (i in 0 until a.length()) capabilities.add(a.optString(i)) }
                 approval = body?.optBoolean("approval", false) ?: false
                 shizuku = body?.optString("shizuku", "offline") ?: "offline"
                 agentSender?.invoke(JSONObject().put("type", "capabilities")
-                    .put("tools", JSONArray(capabilities.toList())).put("approval", approval).toString())
-                200 to JSONObject().put("registered", JSONArray(capabilities.toList())).put("shizuku", shizuku)
+                    .put("tools", JSONArray(capabilitySnapshot())).put("approval", approval).toString())
+                200 to JSONObject().put("registered", JSONArray(capabilitySnapshot())).put("shizuku", shizuku)
             }
             request.path == "/tool/call" && request.method == "POST" -> {
                 val callId = body?.optString("call_id", "") ?: ""
@@ -188,11 +208,13 @@ class NativeBridgeServer(private val context: Context) {
                 val okValue = body?.opt("ok")
                 if (callId.isBlank() || okValue !is Boolean || (state.isNotBlank() && state !in setOf("completed", "not_started", "unknown")))
                     422 to JSONObject().put("detail", "invalid tool receipt")
-                else { agentSender?.invoke(body!!.put("type", "tool_result").toString()); 200 to JSONObject().put("accepted", true) }
+                else if (agentSender?.invoke(body!!.put("type", "tool_result").toString()) != true)
+                    503 to JSONObject().put("detail", "Native Agent unavailable")
+                else 200 to JSONObject().put("accepted", true)
             }
             request.path == "/onboarding/status" && request.method == "GET" -> 200 to onboardingStatus()
             request.path == "/onboarding/vendors" && request.method == "GET" -> 200 to JSONObject().put("vendors", vendors())
-            request.path == "/onboarding/skip" && request.method == "POST" -> { onboardingSkip.parentFile?.mkdirs(); onboardingSkip.writeText("skipped"); 200 to JSONObject().put("ok", true) }
+            request.path == "/onboarding/skip" && request.method == "POST" -> { synchronized(stateLock) { onboardingSkip.parentFile?.mkdirs(); onboardingSkip.writeText("skipped") }; 200 to JSONObject().put("ok", true) }
             request.path == "/onboarding/apply" && request.method == "POST" -> 200 to applyOnboarding(body)
             request.path == "/assistant/catalog" && request.method == "GET" -> 200 to catalog()
             request.path == "/assistant/catalog/install" && request.method == "POST" -> 200 to installCatalog(body)
@@ -203,42 +225,57 @@ class NativeBridgeServer(private val context: Context) {
             request.path == "/assistant/ask" && request.method == "POST" -> {
                 val task = body?.optString("task", "") ?: ""
                 if (task.isBlank() || task.length > 32000) 422 to JSONObject().put("detail", "invalid task")
-                else { agentSender?.invoke((body ?: JSONObject()).put("type", "run").put("session", "assistant-default").toString()); 202 to JSONObject().put("accepted", true) }
+                else if (agentSender?.invoke((body ?: JSONObject()).put("type", "run").put("session", "assistant-default").toString()) != true)
+                    503 to JSONObject().put("detail", "Native Agent unavailable")
+                else 202 to JSONObject().put("accepted", true)
             }
             request.path == "/remote/status" && request.method == "GET" -> 200 to remoteStatus()
-            request.path == "/remote/pair" && request.method == "POST" -> 200 to pairRemote(body)
+            request.path == "/remote/pair" && request.method == "POST" -> 409 to pairRemote(body)
             request.path == "/remote/unpair" && request.method == "POST" -> 200 to unpairRemote()
-            request.path == "/remote/mode" && request.method == "POST" -> 200 to modeRemote(body)
-            request.path == "/remote/approve" && request.method == "POST" -> 200 to JSONObject().put("ok", true)
+            request.path == "/remote/mode" && request.method == "POST" -> { val result = modeRemote(body); (if (result.optBoolean("ok")) 200 else 409) to result }
+            request.path == "/remote/approve" && request.method == "POST" -> 409 to JSONObject().put("ok", false).put("error", "remote control is not available")
             request.path == "/agent/run" && request.method == "POST" -> {
                 val task = body?.optString("task", "") ?: ""
                 if (task.isBlank() || task.length > 32000) 422 to JSONObject().put("detail", "invalid task")
-                else { agentSender?.invoke((body ?: JSONObject()).put("type", "run").put("session", "http").toString()); 202 to JSONObject().put("accepted", true) }
+                else if (agentSender?.invoke((body ?: JSONObject()).put("type", "run").put("session", "http").toString()) != true)
+                    503 to JSONObject().put("detail", "Native Agent unavailable")
+                else 202 to JSONObject().put("accepted", true)
             }
             else -> 404 to JSONObject().put("detail", "not found")
         }
     }
 
-    private fun onboardingStatus(): JSONObject {
+    private fun onboardingStatus(): JSONObject = synchronized(stateLock) {
         val has = runCatching { JSONObject(patchFile.readText()).optJSONArray("rows") }
-            .getOrNull()?.let { a -> (0 until a.length()).any { a.optJSONObject(it)?.optJSONObject("config")?.optString("apiKey").orEmpty().isNotBlank() } } ?: false
-        return JSONObject().put("needed", !onboardingSkip.exists() && !has).put("has_provider", has).put("skipped", onboardingSkip.exists())
+            .getOrNull()?.let { a -> (0 until a.length()).any { i ->
+                val config = a.optJSONObject(i)?.optJSONObject("config") ?: return@any false
+                val key = config.optString("apiKey").trim()
+                val keyless = config.optBoolean("keyless", false)
+                val localEndpoint = runCatching {
+                    val uri = URI(config.optString("baseURL").trim())
+                    uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost")
+                }.getOrDefault(false)
+                key.isNotBlank() || keyless || localEndpoint
+            } } ?: false
+        JSONObject().put("needed", !onboardingSkip.exists() && !has).put("has_provider", has).put("skipped", onboardingSkip.exists())
     }
 
-    private fun applyOnboarding(body: JSONObject?): JSONObject {
+    private fun applyOnboarding(body: JSONObject?): JSONObject = synchronized(stateLock) {
         val id = body?.optString("vendor", "") ?: ""
         val v = vendorList().firstOrNull { it.optString("id") == id } ?: return JSONObject().put("ok", false).put("error", "unknown vendor")
         val key = body?.optString("api_key", "")?.trim().orEmpty()
+        if (key.length > 512) return JSONObject().put("ok", false).put("error", "api key too long")
         if (!v.optBoolean("keyless") && key.isBlank()) return JSONObject().put("ok", false).put("error", "empty api key")
         val data = runCatching { JSONObject(if (patchFile.exists()) patchFile.readText() else "{}") }.getOrDefault(JSONObject())
         val rows = data.optJSONArray("rows") ?: JSONArray().also { data.put("rows", it) }
         val config = JSONObject().put("wire", "openai").put("baseURL", v.optString("baseURL"))
-            .put("apiKey", key).put("model", JSONObject().put("primary", v.optJSONArray("models")?.optString(0)).put("options", v.optJSONArray("models")))
+            .put("apiKey", key).put("keyless", v.optBoolean("keyless", false))
+            .put("model", JSONObject().put("primary", v.optJSONArray("models")?.optString(0)).put("options", v.optJSONArray("models")))
         var replaced = false
         for (i in 0 until rows.length()) if (rows.optJSONObject(i)?.optString("id") == id) { rows.put(i, JSONObject().put("id", id).put("name", "provider:$id").put("config", config)); replaced = true }
         if (!replaced) rows.put(JSONObject().put("id", id).put("name", "provider:$id").put("config", config))
         patchFile.parentFile?.mkdirs(); patchFile.writeText(data.toString(1)); onboardingSkip.writeText("done")
-        return JSONObject().put("ok", true).put("vendor", v.optString("name")).put("model", v.optJSONArray("models")?.optString(0))
+        JSONObject().put("ok", true).put("vendor", v.optString("name")).put("model", v.optJSONArray("models")?.optString(0))
     }
 
     private fun vendors(): JSONArray = JSONArray(vendorList().map {
@@ -299,39 +336,52 @@ class NativeBridgeServer(private val context: Context) {
             .put("name", item.optString("name"))
     }
 
-    private fun loadConnectors(): JSONArray = runCatching { JSONObject(if (connectorsFile.exists()) connectorsFile.readText() else "{}").optJSONArray("connectors") ?: JSONArray() }.getOrDefault(JSONArray())
-    private fun saveConnectors(a: JSONArray) { connectorsFile.parentFile?.mkdirs(); connectorsFile.writeText(JSONObject().put("connectors", a).toString(1)) }
-    private fun upsertConnector(body: JSONObject?): JSONObject {
+    private fun loadConnectors(): JSONArray = synchronized(stateLock) { runCatching { JSONObject(if (connectorsFile.exists()) connectorsFile.readText() else "{}").optJSONArray("connectors") ?: JSONArray() }.getOrDefault(JSONArray()) }
+    private fun saveConnectors(a: JSONArray) { synchronized(stateLock) { connectorsFile.parentFile?.mkdirs(); connectorsFile.writeText(JSONObject().put("connectors", a).toString(1)) } }
+    private fun upsertConnector(body: JSONObject?): JSONObject = synchronized(stateLock) {
         val name = body?.optString("name", "") ?: ""
-        if (!name.matches(Regex("[A-Za-z0-9_.-]+"))) return JSONObject().put("ok", false).put("error", "invalid connector name")
+        if (!name.matches(Regex("[A-Za-z0-9_.-]{1,80}"))) return JSONObject().put("ok", false).put("error", "invalid connector name")
+        if ((body?.optString("url", "") ?: "").length > 2048) return JSONObject().put("ok", false).put("error", "connector url too long")
+        val command = body?.optJSONArray("command") ?: JSONArray()
+        if (command.length() > 32 || (0 until command.length()).any { command.optString(it).length > 1024 })
+            return JSONObject().put("ok", false).put("error", "connector command too large")
+        val env = body?.optJSONObject("env") ?: JSONObject()
+        if (env.length() > 32 || env.keys().asSequence().any { !it.matches(Regex("[A-Za-z_][A-Za-z0-9_]{0,63}")) || env.optString(it).length > 4096 })
+            return JSONObject().put("ok", false).put("error", "connector environment too large")
         val a = loadConnectors(); var row: JSONObject? = null
         for (i in 0 until a.length()) if (a.optJSONObject(i)?.optString("name") == name) row = a.getJSONObject(i)
         if (row == null) { row = JSONObject().put("name", name); a.put(row) }
         row!!.put("enabled", body?.optBoolean("enabled", true) ?: true)
             .put("status", "configured").put("tools", JSONArray())
-            .put("command", body?.optJSONArray("command") ?: JSONArray())
-            .put("env", body?.optJSONObject("env") ?: JSONObject())
+            .put("command", command)
+            .put("env", env)
             .put("url", body?.optString("url", "") ?: "")
-        saveConnectors(a); return JSONObject().put("ok", true).put("connector", row)
+        saveConnectors(a); JSONObject().put("ok", true).put("connector", row)
     }
-    private fun deleteConnector(body: JSONObject?): JSONObject { val name = body?.optString("name", "") ?: ""; val old = loadConnectors(); val out = JSONArray(); for (i in 0 until old.length()) if (old.optJSONObject(i)?.optString("name") != name) out.put(old.getJSONObject(i)); saveConnectors(out); return JSONObject().put("ok", true) }
+    private fun deleteConnector(body: JSONObject?): JSONObject = synchronized(stateLock) { val name = body?.optString("name", "") ?: ""; val old = loadConnectors(); val out = JSONArray(); for (i in 0 until old.length()) if (old.optJSONObject(i)?.optString("name") != name) out.put(old.getJSONObject(i)); saveConnectors(out); JSONObject().put("ok", true) }
 
-    private fun remoteStatus(): JSONObject = runCatching {
-        val data = JSONObject(if (remoteFile.exists()) remoteFile.readText() else "{}")
-        if (!data.has("mode")) data.put("mode", "local")
-        data
-    }.getOrDefault(JSONObject().put("mode", "local").put("paired", false))
+    private fun remoteStatus(): JSONObject = synchronized(stateLock) {
+        runCatching {
+            val data = JSONObject(if (remoteFile.exists()) remoteFile.readText() else "{}")
+            if (!data.has("mode")) data.put("mode", "local")
+            data
+        }.getOrDefault(JSONObject().put("mode", "local").put("paired", false))
+    }
     private fun pairRemote(body: JSONObject?): JSONObject {
         // Do not persist a six-digit code as if it authenticated a desktop. The
         // native bridge has no remote-host handshake yet, so fail closed.
         return JSONObject().put("ok", false)
             .put("error", "遥控电脑的原生 WebSocket 配对尚未接入；当前仅支持本地模式")
     }
-    private fun unpairRemote(): JSONObject { remoteFile.delete(); return JSONObject().put("ok", true) }
-    private fun modeRemote(body: JSONObject?): JSONObject {
+    private fun unpairRemote(): JSONObject = synchronized(stateLock) { remoteFile.delete(); JSONObject().put("ok", true) }
+    private fun modeRemote(body: JSONObject?): JSONObject = synchronized(stateLock) {
         val mode = body?.optString("mode", "") ?: ""
-        if (mode == "local") { remoteFile.delete(); return JSONObject().put("ok", true).put("mode", "local") }
-        return JSONObject().put("ok", false).put("error", "遥控电脑的原生 WebSocket 配对尚未接入")
+        if (mode == "local") {
+            remoteFile.delete()
+            JSONObject().put("ok", true).put("mode", "local")
+        } else {
+            JSONObject().put("ok", false).put("error", "遥控电脑的原生 WebSocket 配对尚未接入")
+        }
     }
 
     private fun readRequest(input: BufferedInputStream): HttpRequest? {
@@ -340,7 +390,7 @@ class NativeBridgeServer(private val context: Context) {
         if (lines.isEmpty()) return null
         val first = lines.first().split(" ", limit = 3); if (first.size < 2) return null
         val headers = linkedMapOf<String, String>(); lines.drop(1).filter { it.contains(":") }.forEach { val i = it.indexOf(':'); headers[it.substring(0, i).trim().lowercase()] = it.substring(i + 1).trim() }
-        val length = headers["content-length"]?.toIntOrNull()?.coerceIn(0, 2_000_000) ?: 0
+        val length = headers["content-length"]?.toLongOrNull()?.let { if (it in 0L..MAX_FRAME_BYTES.toLong()) it.toInt() else return null } ?: 0
         val body = ByteArray(length); var off = 0; while (off < length) { val n = input.read(body, off, length - off); if (n < 0) return null; off += n }
         val target = first[1]; val q = target.indexOf('?'); return HttpRequest(first[0], target.substring(0, if (q < 0) target.length else q), if (q < 0) "" else target.substring(q + 1), headers, body)
     }
@@ -358,24 +408,25 @@ class NativeBridgeServer(private val context: Context) {
             len = (input.read() shl 24) or (input.read() shl 16) or (input.read() shl 8) or input.read()
         }
         val masked = (second and 0x80) != 0
+        if (!masked) return null
         val mask = ByteArray(4)
         if (masked) input.readFully(mask)
-        if (len < 0 || len > 2_000_000) return null   // 超限帧断开：静默截断会造成流错位
+        if (len < 0 || len > MAX_FRAME_BYTES) return null   // 超限帧断开：静默截断会造成流错位
         val data = ByteArray(len)
         input.readFully(data)
         if (masked) for (i in data.indices) data[i] = (data[i].toInt() xor mask[i % 4].toInt()).toByte()
         return opcode to data
     }
     private fun BufferedInputStream.readFully(data: ByteArray) { var off = 0; while (off < data.size) { val n = read(data, off, data.size - off); if (n < 0) throw SocketException("closed"); off += n } }
-    private fun writeJson(output: BufferedOutputStream, code: Int, obj: JSONObject) { val bytes = obj.toString().toByteArray(Charsets.UTF_8); val status = when (code) { 200 -> "OK"; 202 -> "Accepted"; 401 -> "Unauthorized"; 404 -> "Not Found"; 422 -> "Unprocessable Entity"; else -> "Error" }; output.write("HTTP/1.1 $code $status\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray()); output.write(bytes); output.flush() }
+    private fun writeJson(output: BufferedOutputStream, code: Int, obj: JSONObject) { val bytes = obj.toString().toByteArray(Charsets.UTF_8); val status = when (code) { 200 -> "OK"; 202 -> "Accepted"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 404 -> "Not Found"; 409 -> "Conflict"; 422 -> "Unprocessable Entity"; 503 -> "Service Unavailable"; else -> "Error" }; output.write("HTTP/1.1 $code $status\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray()); output.write(bytes); output.flush() }
     private fun authorized(value: String?): Boolean { val expected = "Bearer $token".toByteArray(); val actual = (value ?: "").toByteArray(); return MessageDigest.isEqual(expected, actual) }
     private fun query(query: String, key: String): String? = query.split('&').mapNotNull { val p = it.split('=', limit = 2); if (p.firstOrNull() == key) p.getOrNull(1) else null }.firstOrNull()
 
     private data class HttpRequest(val method: String, val path: String, val query: String, val headers: Map<String, String>, val body: ByteArray)
-    private class WsClient(private val out: BufferedOutputStream) {
+    private class WsClient(private val socket: Socket, private val out: BufferedOutputStream) {
         @Synchronized fun send(text: String) = sendFrame(1, text.toByteArray(Charsets.UTF_8))
-        @Synchronized fun sendFrame(opcode: Int, payload: ByteArray) { val n = payload.size; out.write(0x80 or opcode); when { n < 126 -> out.write(n); n <= 65535 -> { out.write(126); out.write(n shr 8); out.write(n) }; else -> { out.write(127); repeat(4) { out.write(0) }; out.write(n shr 24); out.write(n shr 16); out.write(n shr 8); out.write(n) } }; out.write(payload); out.flush() }
-        fun close() = runCatching { out.flush() }
+        @Synchronized fun sendFrame(opcode: Int, payload: ByteArray) { if (payload.size > MAX_FRAME_BYTES) return; val n = payload.size; out.write(0x80 or opcode); when { n < 126 -> out.write(n); n <= 65535 -> { out.write(126); out.write(n shr 8); out.write(n) }; else -> { out.write(127); repeat(4) { out.write(0) }; out.write(n shr 24); out.write(n shr 16); out.write(n shr 8); out.write(n) } }; out.write(payload); out.flush() }
+        fun close() = runCatching { socket.close() }
     }
-    companion object { private const val TAG = "NativeBridge"; private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" }
+    companion object { private const val TAG = "NativeBridge"; private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"; private const val MAX_FRAME_BYTES = 2_000_000; private val SESSION_PATTERN = Regex("[A-Za-z0-9_-]{1,64}") }
 }
