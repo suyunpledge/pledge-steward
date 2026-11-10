@@ -74,7 +74,7 @@ class WebTools(private val keyLookup: (String) -> String?) {
                 throw IllegalStateException("this is a PDF; fetch_url only reads web pages and plain text")
             if (kind.isNotEmpty() && !(kind.startsWith("text/") || kind in TEXT_TYPES))
                 throw IllegalStateException("unsupported content type $kind")
-            val text = decode(raw, type)
+            val text = AgentWire.stripInvisible(decode(raw, type))
             val html = kind == "text/html" || kind == "application/xhtml+xml" || (kind.isEmpty() && "<html" in text.take(2000).lowercase())
             val (title, body) = if (html) htmlTitle(text) to htmlToText(text) else "" to text.trim()
             val limit = maxChars.coerceIn(200, 50_000)
@@ -99,7 +99,11 @@ class WebTools(private val keyLookup: (String) -> String?) {
                 val url = row.optString("url")
                 url.startsWith("http://") || url.startsWith("https://")
             }.filter { domain == null || onDomain(it.optString("url"), domain) }  // some engines ignore site:
-            if (kept.isNotEmpty()) return kept.take(count).map { it.put("snippet", it.optString("snippet").take(300)).put("engine", name) }
+            if (kept.isNotEmpty()) return kept.take(count).map {
+                it.put("snippet", AgentWire.stripInvisible(it.optString("snippet")).take(300))
+                  .put("title", AgentWire.stripInvisible(it.optString("title")).take(200))
+                  .put("engine", name)
+            }
             errors += "$name: no results"
         }
         return emptyList()
