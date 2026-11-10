@@ -12,7 +12,6 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
-import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Base64
@@ -250,13 +249,7 @@ class NativeBridgeServer(private val context: Context) {
         val has = runCatching { JSONObject(patchFile.readText()).optJSONArray("rows") }
             .getOrNull()?.let { a -> (0 until a.length()).any { i ->
                 val config = a.optJSONObject(i)?.optJSONObject("config") ?: return@any false
-                val key = config.optString("apiKey").trim()
-                val keyless = config.optBoolean("keyless", false)
-                val localEndpoint = runCatching {
-                    val uri = URI(config.optString("baseURL").trim())
-                    uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost")
-                }.getOrDefault(false)
-                key.isNotBlank() || keyless || localEndpoint
+                ProviderPolicy.usable(config, SecretBox.open(config.optString("apiKey").trim()))
             } } ?: false
         JSONObject().put("needed", !onboardingSkip.exists() && !has).put("has_provider", has).put("skipped", onboardingSkip.exists())
     }

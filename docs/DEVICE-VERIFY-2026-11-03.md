@@ -43,3 +43,45 @@
 
 本次工具进程执行 Gradle 时遇到 Java/Gradle 本机 loopback 连接异常；使用仓库已有的
 已构建 debug APK 完成了上述安装和真机验证，未将该环境故障误判为应用运行时故障。
+
+## 后端任务生命周期优化（本轮构建与真机复测）
+
+- `AgentRunCoordinator` 统一任务准入、会话取消和完成后的释放；清理结束前拒绝新任务，
+  避免旧任务清掉新任务状态，并处理尚未开始执行就被取消的任务。
+- 设备回执等待中的取消继续抛出 `CancellationException`，不再转换为普通的
+  `unknown` 回执；工具循环增加取消检查。
+- 模型请求使用 OkHttp 异步回调和 `suspendCancellableCoroutine`，取消直接关闭对应请求，
+  移除共享 `activeCall` 的注册/取消竞态。
+- 引导页和模型加载器共用 `ProviderPolicy`；统一 keyless/本地模型判断，并检查端点及解密后的密钥。
+
+验证：`:app:testDebugUnitTest :app:assembleDebug` 成功；26 项测试，0 失败、0 错误。
+新增 6 项测试覆盖任务交接、快速完成、执行前取消、停止后拒绝任务以及 Provider 配置边界。
+APK SHA-256：`7239770b99c6a47cf48edbdfc939f4009cdf0356858602a0959a5dae3fd31b26`。
+
+本次通过指定独立 socket 临时目录绕过此前的 Gradle loopback 故障，使用的 PowerShell 环境为：
+
+```powershell
+$env:JAVA_HOME = 'C:\jdk'
+$env:ANDROID_HOME = 'C:\sdk'
+$env:ANDROID_SDK_ROOT = 'C:\sdk'
+$env:GRADLE_USER_HOME = 'C:\gradle-fresh'
+New-Item -ItemType Directory -Force C:\gradle-fresh\socket-tmp | Out-Null
+$env:JAVA_TOOL_OPTIONS = '-Djdk.net.unixdomain.tmpdir=C:\gradle-fresh\socket-tmp'
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug --no-daemon
+```
+
+首次安装时设备断开；重新连接 `ebb4d24f` 后，同一 SHA-256 的新版 APK 已通过
+`adb install -r` 安装成功，并重新启动应用。新增真机结果如下：
+
+- `/health` 返回 `status=ok`、`native=true`、`agent_ready=true`；
+  `/onboarding/status` 返回 `has_provider=true`。
+- WS 会话 `backend-lifecycle-test` 收到 `run_started` 后发送取消，约 63 ms 收到
+  `run_failed(execution_state=cancelled)`，没有误报 `run_done(unknown)`。
+- 同一会话随后执行 `1 + 1`，收到 `run_done(execution_state=final, steps=1, answer=2)`。
+- 发送无匹配待处理调用的 `tool_result` 后，仍能正常收到 `pong`。
+- `AgentBridgeService` 为 `isForeground=true`；本次过滤的 AndroidRuntime、
+  NativeAgentEngine、NativeBridgeServer 错误日志无记录。
+
+边界：上述取消在收到 `run_started` 后立即发出，未单独覆盖长时间等待设备工具回执的
+取消场景；该路径仍需专门真机用例。测试脚本位于本地构建目录
+`app/build/backend-regression/verify_device.py`（不纳入版本控制，不包含凭据）。

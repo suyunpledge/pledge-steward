@@ -6,16 +6,20 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
+import java.io.IOException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -23,7 +27,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.URI
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -47,15 +50,12 @@ class NativeAgentEngine(
         .callTimeout(150, TimeUnit.SECONDS)
         .build()
     private val home = File(context.filesDir, "forge-home").apply { mkdirs() }
-    private val runLock = Any()
+    private val runs = AgentRunCoordinator(scope)
     private val toolsLock = Any()
     private val capabilities = ConcurrentHashMap.newKeySet<String>()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
     @Volatile private var approvalAvailable = false
-    @Volatile private var busy = false
-    @Volatile private var activeJob: Job? = null
     @Volatile private var activeSession = "phone"
-    @Volatile private var activeCall: okhttp3.Call? = null
     @Volatile private var activeJournal: File? = null
     private var cachedToolsKey: String? = null
     private var cachedTools: JSONArray? = null
@@ -65,13 +65,9 @@ class NativeAgentEngine(
     fun start() { emit(JSONObject().put("type", "agent_ready")) }
 
     fun stop() {
-        activeCall?.cancel()
-        activeJob?.cancel()
+        runs.stop(notifyTools = ::cancelPendingTools)
         pending.values.forEach { it.cancel() }
         pending.clear()
-        activeCall = null
-        activeJournal = null
-        busy = false
         scope.cancel()
     }
 
@@ -100,10 +96,8 @@ class NativeAgentEngine(
                     .put("error", "invalid tool receipt"))
             }
             // A closing socket for another session must not cancel this run.
-            "cancel", "cancel_tools" -> message.optString("session").let { s ->
-                if (s.isBlank() || s == activeSession) cancelActive()
-            }
-            "reset" -> if (!busy) emit(JSONObject().put("type", "reset_ok"))
+            "cancel", "cancel_tools" -> runs.cancel(message.optString("session"), ::cancelPendingTools)
+            "reset" -> if (!runs.busy) emit(JSONObject().put("type", "reset_ok"))
                 else emit(JSONObject().put("type", "error").put("error", "session busy"))
             "ping" -> emit(JSONObject().put("type", "pong").put("t", System.currentTimeMillis() / 1000.0))
             "run" -> {
@@ -113,14 +107,9 @@ class NativeAgentEngine(
                 if (task.isBlank() || task.length > 32000) {
                     emit(JSONObject().put("type", "error").put("error", "invalid task/history"))
                 } else {
-                    val accepted = synchronized(runLock) {
-                        if (busy || !scope.isActive) false
-                        else {
-                            activeSession = session
-                            busy = true
-                            activeJob = scope.launch { runTask(task, history, session) }
-                            true
-                        }
+                    val accepted = runs.start(session) {
+                        activeSession = session
+                        runTask(task, history, session)
                     }
                     if (!accepted) emit(JSONObject().put("type", "error").put("error", "session busy"))
                 }
@@ -130,17 +119,11 @@ class NativeAgentEngine(
         return true
     }
 
-    private fun cancelActive() {
-        // 阻塞中的 OkHttp execute() 不响应协程取消：不主动 cancel 会把取消
-        // 拖满整个 call timeout（150s）。
-        activeCall?.cancel()
+    private fun cancelPendingTools() {
         pending.forEach { (callId, deferred) ->
             emit(JSONObject().put("type", "cancel_tool").put("call_id", callId))
-            if (!deferred.isCompleted) deferred.complete(JSONObject()
-                .put("type", "tool_result").put("ok", false)
-                .put("execution_state", "unknown").put("error", "cancelled"))
+            deferred.cancel(CancellationException("cancelled"))
         }
-        activeJob?.cancel(CancellationException("cancelled"))
     }
 
     private suspend fun runTask(task: String, history: JSONArray, session: String) {
@@ -148,7 +131,7 @@ class NativeAgentEngine(
         val taskId = UUID.randomUUID().toString().replace("-", "")
         val identity = JSONObject().put("run_id", runId).put("task_id", taskId)
         val safeSession = normalizeSession(session)
-        val journal = File(home, "sessions/phone-$safeSession.jsonl").apply { parentFile?.mkdirs() }
+        val journal = File(home, "sessions/phone-$safeSession.jsonl")
         activeJournal = journal
         try {
             emit(JSONObject().put("type", "run_started").put("entry", "android").put("protocol_version", 1).put("run_id", runId).put("task_id", taskId))
@@ -160,7 +143,8 @@ class NativeAgentEngine(
             val messages = mutableListOf<JSONObject>()
             messages += JSONObject().put("role", "system").put("content", SYSTEM_PROMPT)
             var historyChars = 0
-            val historyStart = (history.length() - MAX_HISTORY_ITEMS).coerceAtLeast(0)
+            // 台阶窗（见 historyWindow）：头部边界跨轮稳定是前缀命中的前提。
+            val historyStart = historyWindow(history)
             for (i in historyStart until history.length()) {
                 val row = history.optJSONObject(i) ?: continue
                 val role = row.optString("role")
@@ -177,15 +161,21 @@ class NativeAgentEngine(
             var finalAnswer = ""
             var completed = false
             var steps = 0
+            // 缓存命中可读化（同主仓）：prompt/cached 累计进 run_done，
+            // 命中率 = cached / prompt；厂商未回报 usage 时保持零值不臆造。
+            val usageTotal = JSONObject()
+                .put("prompt_tokens", 0).put("completion_tokens", 0).put("cached_tokens", 0)
             for (step in 0 until MAX_STEPS) {
+                currentCoroutineContext().ensureActive()
                 steps = step + 1
                 val response = requestModel(provider, messages, toolDefinitions())
                 currentCoroutineContext().ensureActive()
-                if (response.first == null) {
-                    finishFailure(identity, response.second ?: "模型请求失败", "model_request_failed")
+                if (response.message == null) {
+                    finishFailure(identity, response.error ?: "模型请求失败", "model_request_failed")
                     return
                 }
-                val message = response.first!!
+                accumulateUsage(usageTotal, response.usage)
+                val message = response.message
                 val content = textContent(message)
                 if (content.isNotBlank()) {
                     finalAnswer = content
@@ -198,6 +188,7 @@ class NativeAgentEngine(
                     break
                 }
                 for (call in calls) {
+                    currentCoroutineContext().ensureActive()
                     val validationError = validateTool(call.first, call.third)
                     if (validationError != null) {
                         messages += JSONObject().put("role", "tool").put("tool_call_id", call.second).put("content", JSONObject().put("ok", false).put("execution_state", "not_started").put("error", validationError).toString())
@@ -222,21 +213,24 @@ class NativeAgentEngine(
                             // Tell the app to drop the call so a late approval cannot still run it.
                             emit(JSONObject().put("type", "cancel_tool").put("call_id", callId))
                             JSONObject().put("ok", false).put("execution_state", AgentWire.timeoutState(call.first)).put("error", "device tool timeout")
-                        } catch (_: CancellationException) {
-                            JSONObject().put("ok", false).put("execution_state", "unknown").put("error", "cancelled")
+                        } catch (cancelled: CancellationException) {
+                            emit(JSONObject().put("type", "cancel_tool").put("call_id", callId))
+                            throw cancelled
                         } finally { pending.remove(callId) }
                     }
+                    currentCoroutineContext().ensureActive()
                     val state = receipt.optString("execution_state", if (receipt.optBoolean("ok")) "completed" else "unknown")
                     emit(JSONObject().put("type", "agent.tool_completed").put("tool", call.first).put("call_id", callId).put("ok", receipt.optBoolean("ok") && state != "unknown").put("execution_state", state).put("run_id", runId).put("task_id", taskId))
                     // Pixels and other binary payloads never enter the model conversation.
                     messages += JSONObject().put("role", "tool").put("tool_call_id", callId).put("content", AgentWire.modelReceipt(receipt).toString())
                     if (state == "unknown") {
-                        finishDone(identity, finalAnswer, step + 1, "unknown")
+                        finishDone(identity, finalAnswer, step + 1, "unknown", usageTotal)
                         return
                     }
                 }
             }
-            finishDone(identity, finalAnswer, steps, if (completed) "final" else "max_steps")
+            currentCoroutineContext().ensureActive()
+            finishDone(identity, finalAnswer, steps, if (completed) "final" else "max_steps", usageTotal)
         } catch (_: CancellationException) {
             appendJournal(journal, JSONObject().put("type", "run_failed").put("execution_state", "cancelled").put("run_id", runId))
             emit(JSONObject().put("type", "run_failed").put("execution_state", "cancelled").put("error", "任务已取消").put("run_id", runId).put("task_id", taskId))
@@ -244,9 +238,6 @@ class NativeAgentEngine(
             Log.e(TAG, "native agent run failed", t)
             finishFailure(identity, t.message ?: "Agent 执行失败", "agent_failed")
         } finally {
-            busy = false
-            activeJob = null
-            activeCall = null
             activeJournal = null
         }
     }
@@ -260,31 +251,61 @@ class NativeAgentEngine(
             val base = config.optString("baseURL").trim()
             val key = SecretBox.open(config.optString("apiKey").trim())
             val model = config.optJSONObject("model")?.optString("primary").orEmpty()
-            val localNoKey = runCatching { URI(base).scheme == "http" && URI(base).host in setOf("127.0.0.1", "localhost") }.getOrDefault(false)
-            if (base.isNotBlank() && (key.isNotBlank() || localNoKey))
+            if (ProviderPolicy.usable(config, key))
                 return Provider(base, key, model.ifBlank { "gpt-4o-mini" }, config.optString("wire", "openai"))
         }
         return null
     }
 
-    private suspend fun requestModel(provider: Provider, messages: List<JSONObject>, tools: JSONArray): Pair<JSONObject?, String?> = withContext(Dispatchers.IO) {
+    private data class ModelReply(val message: JSONObject?, val error: String?, val usage: JSONObject? = null)
+
+    /** 归一厂商 usage：DeepSeek prompt_cache_hit_tokens / OpenAI prompt_tokens_details.cached_tokens。 */
+    private fun parseUsage(raw: JSONObject): JSONObject? {
+        val usage = raw.optJSONObject("usage") ?: return null
+        val details = usage.optJSONObject("prompt_tokens_details")
+        val cached = usage.optInt("prompt_cache_hit_tokens", details?.optInt("cached_tokens", 0) ?: 0)
+        return JSONObject()
+            .put("prompt_tokens", usage.optInt("prompt_tokens", 0))
+            .put("completion_tokens", usage.optInt("completion_tokens", 0))
+            .put("cached_tokens", cached)
+    }
+
+    private fun accumulateUsage(total: JSONObject, delta: JSONObject?) {
+        if (delta == null) return
+        for (key in listOf("prompt_tokens", "completion_tokens", "cached_tokens")) {
+            total.put(key, total.optInt(key, 0) + delta.optInt(key, 0))
+        }
+    }
+
+    private suspend fun requestModel(provider: Provider, messages: List<JSONObject>, tools: JSONArray): ModelReply = withContext(Dispatchers.IO) {
         val url = provider.baseUrl.trimEnd('/') + if (provider.baseUrl.endsWith("/chat/completions")) "" else "/chat/completions"
         val body = JSONObject().put("model", provider.model).put("messages", JSONArray(messages)).put("stream", false)
         if (tools.length() > 0) body.put("tools", tools).put("tool_choice", "auto")
         val request = Request.Builder().url(url).post(body.toString().toRequestBody("application/json".toMediaType()))
             .apply { if (provider.key.isNotBlank()) header("Authorization", "Bearer ${provider.key}") }.build()
         val call = client.newCall(request)
-        activeCall = call
-        try {
-            runCatching {
-                call.execute().use { response ->
-                    val raw = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) return@use Pair<JSONObject?, String?>(null, "模型 HTTP ${response.code}: ${raw.take(300)}")
-                    val choices = JSONObject(raw).optJSONArray("choices") ?: return@use Pair<JSONObject?, String?>(null, "模型响应缺少 choices")
-                    Pair(choices.optJSONObject(0)?.optJSONObject("message"), null)
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    continuation.resume(ModelReply(null, "模型连接失败: ${e.message}"))
                 }
-            }.getOrElse { Pair(null, "模型连接失败: ${it.message}") }
-        } finally { activeCall = null }
+                override fun onResponse(call: Call, response: Response) {
+                    val result = runCatching {
+                        response.use {
+                            val raw = it.body?.string().orEmpty()
+                            if (!it.isSuccessful) ModelReply(null, "模型 HTTP ${it.code}: ${raw.take(300)}")
+                            else {
+                                val message = JSONObject(raw).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+                                if (message == null) ModelReply(null, "模型响应缺少 message")
+                                else ModelReply(message, null, parseUsage(JSONObject(raw)))
+                            }
+                        }
+                    }.getOrElse { ModelReply(null, "模型响应失败: ${it.message}") }
+                    continuation.resume(result)
+                }
+            })
+        }
     }
 
     /**
@@ -377,10 +398,18 @@ class NativeAgentEngine(
         return out
     }
 
-    private fun finishDone(identity: JSONObject, answer: String, steps: Int, state: String) {
-        activeJournal?.let { appendJournal(it, JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("steps", steps)) }
+    private fun finishDone(identity: JSONObject, answer: String, steps: Int, state: String, usage: JSONObject? = null) {
+        val usageBlock = usage?.let {
+            val block = JSONObject(it.toString())
+            val prompt = it.optInt("prompt_tokens", 0)
+            if (prompt > 0) block.put("cache_hit_rate", it.optInt("cached_tokens", 0).toDouble() / prompt)
+            block
+        }
+        activeJournal?.let { appendJournal(it, JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("steps", steps).put("usage", usageBlock ?: JSONObject.NULL)) }
         // No price table on the phone yet: omit cost rather than report ¥0.
-        emit(JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("answer", answer).put("steps", steps))
+        val event = JSONObject(identity.toString()).put("type", "run_done").put("execution_state", state).put("answer", answer).put("steps", steps)
+        if (usageBlock != null) event.put("usage", usageBlock)
+        emit(event)
     }
 
     private fun finishFailure(identity: JSONObject, error: String, code: String) {
@@ -451,11 +480,33 @@ class NativeAgentEngine(
         private const val MAX_TOOL_CALLS_PER_STEP = 8
         private const val MAX_HISTORY_ITEMS = 100
         private const val MAX_HISTORY_CHARS = 120_000
+        // 台阶窗步长：历史超限后窗口起点一次跳 20 条，而不是每轮滑 1 条——
+        // 滑窗会让历史头部每轮变一条，前缀缓存从第一条起每轮全价重读。
+        private const val HISTORY_STEP = 20
         private const val MAX_MESSAGE_CHARS = 32_000
         private val SESSION_PATTERN = Regex("[A-Za-z0-9_-]{1,64}")
         private const val SYSTEM_PROMPT = "You are Steward, a careful Android personal assistant. Use web_search and fetch_url for public information, device tools only when available, ask for confirmation through the host for writes, inspect before and after actions, and never claim a business outcome from a backend receipt alone. Keep answers concise for a phone screen."
 
         /** 纯函数：按给定顺序构建 tools 数组（顺序由调用方排序，字节稳定性由记忆化保证）。 */
+        /**
+         * 前缀缓存纪律（同主仓 forge/loop.py 的会话前缀纪律）：历史窗口的头部
+         * 边界必须跨轮字节稳定。旧的逐条滑窗（length - MAX_HISTORY_ITEMS）在
+         * 超限后每轮滑掉最旧一条——服务商按请求前缀逐字节命中缓存，历史从第
+         * 一条起每轮全价重读。台阶窗：起点按 HISTORY_STEP 向上取整，只在跨过
+         * 台阶时一次跳一格（一跳付一次全价重读，期间边界与整段前缀逐字节稳
+         * 定）；裁剪点再对齐到 user 起始的完整问答组，不产生孤儿 assistant。
+         */
+        fun historyWindow(history: JSONArray): Int {
+            val excess = history.length() - MAX_HISTORY_ITEMS
+            if (excess <= 0) return 0
+            var start = ((excess + HISTORY_STEP - 1) / HISTORY_STEP) * HISTORY_STEP
+            while (start < history.length() &&
+                history.optJSONObject(start)?.optString("role") == "assistant") {
+                start++
+            }
+            return start
+        }
+
         fun buildToolDefinitions(sortedNames: List<String>): JSONArray {
         val out = JSONArray()
         for (name in sortedNames) {
