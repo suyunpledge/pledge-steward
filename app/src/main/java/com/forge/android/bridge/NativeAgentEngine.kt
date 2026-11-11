@@ -465,25 +465,47 @@ class NativeAgentEngine(
     }
 
     @Volatile private var mcpCache: List<Pair<String, JSONObject>>? = null
-    @Volatile private var mcpCacheAt = 0L
+    @Volatile private var mcpCacheStamp: String? = null
 
-    /** url 型连接器的 MCP 工具：内部名（mcp.<连接器>.<工具>，门禁/分发用）+ wire 名信封
-     *  （下划线，发模型用；OpenAI 兼容接口只认 ^[a-zA-Z0-9_-]+$）。5 分钟缓存；
-     *  stdio 连接器 Android 沙箱不可执行，跳过。 */
+    private val mcpToolsSnapshot: File get() = File(home, "mcp-tools-cache.json")
+
+    /** url 型连接器的 MCP 工具：内部名 + wire 名信封。缓存键=连接器文件戳
+     *  （size:mtime），不用 TTL——会话中途定时刷新会让工具面字节翻转，把整段
+     *  前缀打冷；只有连接器清单真正变化才重建。listTools 偶发失败时回退
+     *  last-good 快照（工具面不缩水），成功则落快照。stdio 连接器跳过。 */
     private suspend fun mcpToolEnvelopes(): List<Pair<String, JSONObject>> {
-        val now = System.currentTimeMillis()
-        mcpCache?.let { if (now - mcpCacheAt < 300_000) return it }
-        val envs = McpClient.loadConnectors(File(home, "mcp_connectors.json")).flatMap { c ->
-            runCatching { McpClient.listTools(mcp, c.url) }.getOrNull()?.let { tools ->
-                (0 until tools.length()).mapNotNull { tools.optJSONObject(it) }.mapNotNull { raw ->
-                    val internal = "mcp." + c.name + "." + raw.optString("name").trim()
-                    McpClient.envelope(c.name, raw)?.let { internal to it }
-                }
-            } ?: emptyList<Pair<String, JSONObject>>()
+        val connectorsFile = File(home, "mcp_connectors.json")
+        val stamp = if (connectorsFile.exists())
+            connectorsFile.length().toString() + ":" + connectorsFile.lastModified() else "none"
+        mcpCache?.let { if (stamp == mcpCacheStamp) return it }
+        val snapshot = runCatching {
+            if (mcpToolsSnapshot.exists()) JSONObject(mcpToolsSnapshot.readText()) else JSONObject()
+        }.getOrDefault(JSONObject())
+        val envs = mutableListOf<Pair<String, JSONObject>>()
+        val snapshotOut = JSONObject()
+        for (c in McpClient.loadConnectors(connectorsFile)) {
+            val fresh = runCatching { McpClient.listTools(mcp, c.url) }.getOrNull()
+            val tools = fresh ?: runCatching {
+                snapshot.optJSONArray(c.url)?.let { snapshotOut.put(c.url, it); it }
+            }.getOrNull()
+            if (fresh != null) snapshotOut.put(c.url, fresh)
+            if (tools == null) continue
+            for (i in 0 until tools.length()) {
+                val raw = tools.optJSONObject(i) ?: continue
+                val internal = "mcp." + c.name + "." + raw.optString("name").trim()
+                McpClient.envelope(c.name, raw)?.let { envs += internal to it }
+            }
         }
-        mcpCache = envs
-        mcpCacheAt = now
-        return envs
+        runCatching {
+            if (snapshotOut.length() > 0) {
+                mcpToolsSnapshot.parentFile?.mkdirs()
+                mcpToolsSnapshot.writeText(snapshotOut.toString())
+            }
+        }
+        val sorted = ChatMode.sortedEnvelopes(envs)
+        mcpCache = sorted
+        mcpCacheStamp = stamp
+        return sorted
     }
 
     private suspend fun mcpCall(name: String, args: JSONObject): JSONObject {

@@ -133,11 +133,20 @@ class MainActivity : ComponentActivity() {
 
     private fun send(text: String, chatMode: Boolean = false) {
         if (text.isBlank()) return
+        // 多轮历史（chat）：先装配再追加本轮 user——历史成为请求的可缓存前缀，
+        // 命中率随轮次抬升（append-only，详见 ChatMode.buildHistory）。
+        val history = if (chatMode)
+            com.forge.android.bridge.ChatMode.buildHistory(
+                chatModeList.value.map { it.role to it.text })
+        else null
         append(ChatItem("user", text), chatMode)
         val payload = JSONObject().put("type", "run")
             .put("session", if (chatMode) "chat" else "assistant-default")
             .put("task", text)
-        if (chatMode) payload.put("mode", "chat")
+        if (chatMode) {
+            payload.put("mode", "chat")
+            history?.let { payload.put("history", it) }
+        }
         AgentBridgeService.send(this, payload.toString())
     }
 

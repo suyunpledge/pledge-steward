@@ -36,7 +36,7 @@ object ChatMode {
             "type" to "function",
             "function" to obj(
                 "name" to "web_search",
-                "description" to "Search the public web. region: auto/cn/global/both.",
+                "description" to "Web search (region: auto/cn/global/both).",
                 "parameters" to obj("type" to "object", "properties" to obj(
                     "query" to textParam("search query"),
                     "num" to obj("type" to "integer", "minimum" to 1, "maximum" to 10),
@@ -58,7 +58,7 @@ object ChatMode {
             "type" to "function",
             "function" to obj(
                 "name" to AgentWire.wireName("workbench.write"),
-                "description" to "Replace (or append to) the plan draft on the user's workbench. Use this whenever a plan/solution is ready.",
+                "description" to "Replace (default) or append the workbench draft. Use when a plan is ready.",
                 "parameters" to obj("type" to "object", "properties" to obj(
                     "content" to textParam("workbench draft content"),
                     "append" to obj("type" to "boolean", "description" to "true = append instead of replace (default false)")
@@ -79,4 +79,34 @@ object ChatMode {
      *  AgentWire.resolveToolName 映射回内部名后再进门禁与分发。 */
     fun chatToolNames(mcpInternalNames: Collection<String>): Set<String> =
         HOST_TOOLS + mcpInternalNames
+
+    /** 信封按内部名稳定排序——工具面字节序确定是前缀命中的前提。 */
+    fun sortedEnvelopes(pairs: List<Pair<String, JSONObject>>): List<Pair<String, JSONObject>> =
+        pairs.sortedBy { it.first }
+
+    /**
+     * UI 侧多轮历史装配（append-only，按时间序）：user→user、agent→assistant，
+     * summary/error 丢弃。取最近 maxItems 条且总字符不超过 maxChars（超预算时
+     * 从最旧开始丢弃，保序输出。历史进请求后成为可缓存前缀，这是 chat 模式
+     * 命中率的主要杠杆——引擎侧台阶窗只做二次封顶）。
+     */
+    fun buildHistory(entries: List<Pair<String, String>>, maxItems: Int = 20, maxChars: Int = 8000): org.json.JSONArray {
+        // UI 条目角色是 "agent"，外部历史用 "assistant"——两者都视为助手轮
+        val turns = entries.filter { (role, text) ->
+            text.isNotBlank() && (role == "user" || role == "agent" || role == "assistant")
+        }.takeLast(maxItems)
+        var budget = maxChars
+        val kept = mutableListOf<Pair<String, String>>()
+        for ((role, text) in turns.asReversed()) {   // 从最新往回收，超预算停
+            if (budget - text.length < 0) break
+            budget -= text.length
+            kept += role to text
+        }
+        val out = org.json.JSONArray()
+        for ((role, text) in kept.asReversed()) {    // 恢复时间序
+            val wireRole = if (role == "user") "user" else "assistant"
+            out.put(org.json.JSONObject().put("role", wireRole).put("content", text.take(4000)))
+        }
+        return out
+    }
 }

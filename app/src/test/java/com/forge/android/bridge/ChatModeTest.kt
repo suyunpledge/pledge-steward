@@ -11,6 +11,44 @@ import org.junit.Test
 
 class ChatModeTest {
 
+    @Test
+    fun buildHistory_keepsOrderBudgetAndTurns() {
+        val entries = listOf(
+            "user" to "第一问", "summary" to "噪音", "agent" to "第一答",
+            "error" to "噪音2", "user" to "第二问", "agent" to "第二答").map { it }
+        val hist = ChatMode.buildHistory(entries)
+        // 保序、只留对话轮
+        val out = (0 until hist.length()).map { hist.getJSONObject(it) }
+        assertEquals(listOf("user", "assistant", "user", "assistant"), out.map { it.getString("role") })
+        assertEquals("第一问", out[0].getString("content"))
+        assertEquals("第二答", out[3].getString("content"))
+    }
+
+    @Test
+    fun buildHistory_dropsOldestWhenOverBudget() {
+        val entries = (1..8).flatMap { i -> listOf("user" to "问".repeat(1000), "agent" to "答".repeat(1000)) }
+        val hist = ChatMode.buildHistory(entries, maxItems = 20, maxChars = 5000)
+        // 预算 5000：从最新往回收，超预算即停——保留最近 ~2 轮且保序
+        val total = (0 until hist.length()).sumOf { hist.getJSONObject(it).getString("content").length }
+        assertTrue(hist.length() in 2..6)   // 5000 字符预算恰好收 5 条（1000 字/条）
+        assertTrue(total <= 5000)
+        // 从最新往回收，最旧保留条可能是助手轮（合法：OpenAI 格式允许；引擎台阶窗二次裁剪）
+        val roles = (0 until hist.length()).map { hist.getJSONObject(it).getString("role") }
+        assertTrue(roles.all { it == "user" || it == "assistant" })
+        assertEquals("assistant", roles.last())  // 最新一轮的答案必在
+    }
+
+    @Test
+    fun sortedEnvelopes_deterministicOrder() {
+        val a = "mcp.zeta.tool" to JSONObject().put("x", 1)
+        val b = "mcp.alpha.tool" to JSONObject().put("x", 2)
+        val s1 = ChatMode.sortedEnvelopes(listOf(a, b))
+        val s2 = ChatMode.sortedEnvelopes(listOf(b, a))
+        assertEquals(s1.map { it.first }, s2.map { it.first })
+        assertEquals("mcp.alpha.tool", s1.first().first)
+    }
+
+
     private fun names(tools: JSONArray) =
         (0 until tools.length()).map { tools.getJSONObject(it).getJSONObject("function").getString("name") }
 
