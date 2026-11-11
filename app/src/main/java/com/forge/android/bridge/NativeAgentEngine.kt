@@ -104,12 +104,13 @@ class NativeAgentEngine(
                 val task = message.optString("task", "")
                 val history = message.optJSONArray("history") ?: JSONArray()
                 val session = normalizeSession(message.optString("session", "phone"))
+                val mode = if (message.optString("mode", "work") == "chat") "chat" else "work"
                 if (task.isBlank() || task.length > 32000) {
                     emit(JSONObject().put("type", "error").put("error", "invalid task/history"))
                 } else {
                     val accepted = runs.start(session) {
                         activeSession = session
-                        runTask(task, history, session)
+                        runTask(task, history, session, mode)
                     }
                     if (!accepted) emit(JSONObject().put("type", "error").put("error", "session busy"))
                 }
@@ -126,10 +127,10 @@ class NativeAgentEngine(
         }
     }
 
-    private suspend fun runTask(task: String, history: JSONArray, session: String) {
+    private suspend fun runTask(task: String, history: JSONArray, session: String, mode: String = "work") {
         val runId = UUID.randomUUID().toString().replace("-", "")
         val taskId = UUID.randomUUID().toString().replace("-", "")
-        val identity = JSONObject().put("run_id", runId).put("task_id", taskId)
+        val identity = JSONObject().put("run_id", runId).put("task_id", taskId).put("mode", mode)
         val safeSession = normalizeSession(session)
         val journal = File(home, "sessions/phone-$safeSession.jsonl")
         activeJournal = journal
@@ -141,7 +142,8 @@ class NativeAgentEngine(
                 return
             }
             val messages = mutableListOf<JSONObject>()
-            messages += JSONObject().put("role", "system").put("content", SYSTEM_PROMPT)
+            messages += JSONObject().put("role", "system").put("content",
+                if (mode == "chat") ChatMode.SYSTEM_PROMPT else SYSTEM_PROMPT)
             var historyChars = 0
             // 台阶窗（见 historyWindow）：头部边界跨轮稳定是前缀命中的前提。
             val historyStart = historyWindow(history)
@@ -168,7 +170,11 @@ class NativeAgentEngine(
             for (step in 0 until MAX_STEPS) {
                 currentCoroutineContext().ensureActive()
                 steps = step + 1
-                val response = requestModel(provider, messages, toolDefinitions())
+                val chatEnvelopes = if (mode == "chat") mcpToolEnvelopes() else emptyList()
+                val runKnownTools: Set<String> = if (mode == "chat")
+                    ChatMode.chatToolNames(chatEnvelopes) else capabilities + HOST_TOOLS
+                val response = requestModel(provider, messages,
+                    if (mode == "chat") ChatMode.chatToolDefinitions(chatEnvelopes) else toolDefinitions())
                 currentCoroutineContext().ensureActive()
                 if (response.message == null) {
                     finishFailure(identity, response.error ?: "模型请求失败", "model_request_failed")
@@ -179,9 +185,9 @@ class NativeAgentEngine(
                 val content = textContent(message)
                 if (content.isNotBlank()) {
                     finalAnswer = content
-                    emit(JSONObject().put("type", "agent.assistant_message").put("text", content).put("step", step).put("run_id", runId).put("task_id", taskId))
+                    emit(JSONObject().put("type", "agent.assistant_message").put("text", content).put("step", step).put("mode", mode).put("run_id", runId).put("task_id", taskId))
                 }
-                val calls = normalizeToolCalls(message, runId, step)
+                val calls = normalizeToolCalls(message, runId, step, runKnownTools)
                 messages += sanitizeAssistantMessage(message, calls)
                 if (calls.isEmpty()) {
                     completed = true
@@ -189,23 +195,27 @@ class NativeAgentEngine(
                 }
                 for (call in calls) {
                     currentCoroutineContext().ensureActive()
-                    val validationError = validateTool(call.first, call.third)
+                    val chatGate = if (mode == "chat" && !ChatMode.isChatTool(call.first))
+                        "not available in chat mode (web/MCP/workbench only)" else null
+                    val validationError = chatGate ?: validateTool(call.first, call.third)
                     if (validationError != null) {
                         messages += JSONObject().put("role", "tool").put("tool_call_id", call.second).put("content", JSONObject().put("ok", false).put("execution_state", "not_started").put("error", validationError).toString())
-                        emit(JSONObject().put("type", "agent.tool_completed").put("tool", call.first).put("call_id", call.second).put("ok", false).put("execution_state", "not_started").put("run_id", runId).put("task_id", taskId))
+                        emit(JSONObject().put("type", "agent.tool_completed").put("tool", call.first).put("call_id", call.second).put("ok", false).put("execution_state", "not_started").put("mode", mode).put("run_id", runId).put("task_id", taskId))
                         continue
                     }
                     val args = call.third
                     val callId = call.second.ifBlank { "tc-${System.nanoTime()}" }
                     appendJournal(journal, JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args))
-                    val receipt = if (call.first in HOST_TOOLS) {
+                    // chat 模式的工具全部走 host 分支：agent.tool_started 已带更好的
+                    // 中文标签（联网搜索/连接器/工作台），这里不再额外发 tool_call 免得双行。
+                    val receipt = if (call.first in HOST_TOOLS || ChatMode.isHostTool(call.first)) {
                         // Host tools never reach the app: "tool_call" is what triggers device execution.
-                        emit(JSONObject().put("type", "agent.tool_started").put("call_id", callId).put("tool", call.first).put("run_id", runId).put("task_id", taskId))
+                        emit(JSONObject().put("type", "agent.tool_started").put("call_id", callId).put("tool", call.first).put("mode", mode).put("run_id", runId).put("task_id", taskId))
                         runHostTool(call.first, args)
                     } else {
                         val result = CompletableDeferred<JSONObject>()
                         pending[callId] = result
-                        emit(JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args).put("run_id", runId).put("task_id", taskId))
+                        emit(JSONObject().put("type", "tool_call").put("call_id", callId).put("tool", call.first).put("arguments", args).put("mode", mode).put("run_id", runId).put("task_id", taskId))
                         try {
                             withTimeout(DEVICE_RECEIPT_MS) { result.await() }
                         } catch (_: TimeoutCancellationException) {
@@ -220,7 +230,7 @@ class NativeAgentEngine(
                     }
                     currentCoroutineContext().ensureActive()
                     val state = receipt.optString("execution_state", if (receipt.optBoolean("ok")) "completed" else "unknown")
-                    emit(JSONObject().put("type", "agent.tool_completed").put("tool", call.first).put("call_id", callId).put("ok", receipt.optBoolean("ok") && state != "unknown").put("execution_state", state).put("run_id", runId).put("task_id", taskId))
+                    emit(JSONObject().put("type", "agent.tool_completed").put("tool", call.first).put("call_id", callId).put("ok", receipt.optBoolean("ok") && state != "unknown").put("execution_state", state).put("mode", mode).put("run_id", runId).put("task_id", taskId))
                     // Pixels and other binary payloads never enter the model conversation;
                     // untrusted sources (web / foreign screens) enter inside a data boundary.
                     messages += JSONObject().put("role", "tool").put("tool_call_id", callId).put("content", AgentWire.toolMessageContent(call.first, receipt))
@@ -379,7 +389,7 @@ class NativeAgentEngine(
         }
     }
 
-    private fun normalizeToolCalls(message: JSONObject, runId: String, step: Int): List<Triple<String, String, JSONObject>> {
+    private fun normalizeToolCalls(message: JSONObject, runId: String, step: Int, known: Set<String>): List<Triple<String, String, JSONObject>> {
         val out = mutableListOf<Triple<String, String, JSONObject>>()
         val calls = message.optJSONArray("tool_calls") ?: return out
         val seen = mutableSetOf<String>()
@@ -394,7 +404,7 @@ class NativeAgentEngine(
                 callId = "$baseId-$suffix"
                 suffix++
             }
-            out += Triple(AgentWire.resolveToolName(fn.optString("name"), capabilities + HOST_TOOLS), callId, args)
+            out += Triple(AgentWire.resolveToolName(fn.optString("name"), known), callId, args)
         }
         return out
     }
@@ -436,11 +446,61 @@ class NativeAgentEngine(
         emitLine(obj.toString())
     }
 
+    private val workbenchFile get() = File(home, "workbench.txt")
+    private val mcp by lazy { McpClient.client() }
+
+    private fun workbenchRead(): String =
+        if (workbenchFile.exists()) AgentWire.stripInvisible(workbenchFile.readText().take(32_000)) else ""
+
+    private fun workbenchWrite(args: JSONObject): JSONObject {
+        val content = args.optString("content")
+        val append = args.optBoolean("append", false)
+        val current = if (append && workbenchFile.exists()) workbenchFile.readText() else ""
+        val merged = (current + (if (append && current.isNotEmpty()) "\n" else "") + content).take(32_000)
+        workbenchFile.writeText(merged)
+        emit(JSONObject().put("type", "workbench_updated").put("content", merged))
+        return JSONObject().put("bytes", merged.length)
+    }
+
+    @Volatile private var mcpCache: List<JSONObject>? = null
+    @Volatile private var mcpCacheAt = 0L
+
+    /** url 型连接器的 MCP 工具信封（5 分钟缓存；stdio 连接器 Android 上不可执行，跳过）。 */
+    private suspend fun mcpToolEnvelopes(): List<JSONObject> {
+        val now = System.currentTimeMillis()
+        mcpCache?.let { if (now - mcpCacheAt < 300_000) return it }
+        val envs = McpClient.loadConnectors(File(home, "mcp_connectors.json")).flatMap { c ->
+            runCatching { McpClient.listTools(mcp, c.url) }.getOrNull()?.let { tools ->
+                (0 until tools.length()).mapNotNull { tools.optJSONObject(it) }
+                    .mapNotNull { McpClient.envelope(c.name, it) }
+            } ?: emptyList<JSONObject>()
+        }
+        mcpCache = envs
+        mcpCacheAt = now
+        return envs
+    }
+
+    private suspend fun mcpCall(name: String, args: JSONObject): JSONObject {
+        // mcp.<连接器>.<工具名>（工具名本身可含点，取第一个点段后全部）
+        val rest = name.removePrefix("mcp.")
+        val connName = rest.substringBefore(".")
+        val toolName = rest.substringAfter(".", "")
+        if (toolName.isBlank()) throw IllegalStateException("bad mcp tool name $name")
+        val conn = McpClient.loadConnectors(File(home, "mcp_connectors.json")).firstOrNull { it.name == connName }
+            ?: throw IllegalStateException("connector $connName not found or not http")
+        val result = McpClient.callTool(mcp, conn.url, toolName, args)
+        return JSONObject().put("result", result)
+    }
+
     private suspend fun runHostTool(name: String, args: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         runCatching {
-            when (name) {
-                "web_search" -> web.search(args.getString("query"), args.optInt("num", 5), args.optString("site", "all"), args.optString("region", "auto"))
-                else -> web.fetch(args.getString("url"), args.optInt("max_chars", 5000))
+            when {
+                name == "web_search" -> web.search(args.getString("query"), args.optInt("num", 5), args.optString("site", "all"), args.optString("region", "auto"))
+                name == "fetch_url" -> web.fetch(args.getString("url"), args.optInt("max_chars", 5000))
+                name == "workbench.write" -> workbenchWrite(args)
+                name == "workbench.read" -> JSONObject().put("content", workbenchRead())
+                name.startsWith("mcp.") -> mcpCall(name, args)
+                else -> throw IllegalStateException("unknown host tool $name")
             }.put("ok", true).put("execution_state", "completed")
         }.getOrElse {
             // A failed read changed nothing; the run continues and the model sees why.
@@ -452,12 +512,18 @@ class NativeAgentEngine(
         fun str(key: String, max: Int, required: Boolean) = args.opt(key).let { v ->
             if (v == null) !required else v is String && v.isNotBlank() && v.length <= max }
         fun int(key: String, min: Int, max: Int) = args.opt(key).let { v -> v == null || (v is Int && v in min..max) }
-        return when (name) {
-            "web_search" -> if (args.keys().asSequence().all { it in setOf("query", "num", "site", "region") } &&
+        return when {
+            name == "web_search" -> if (args.keys().asSequence().all { it in setOf("query", "num", "site", "region") } &&
                 str("query", 500, true) && int("num", 1, 10) && str("site", 100, false) &&
                 (!args.has("region") || args.optString("region") in WebTools.REGIONS)) null else "invalid web_search arguments"
-            else -> if (args.keys().asSequence().all { it in setOf("url", "max_chars") } && str("url", 2048, true) &&
+            name == "fetch_url" -> if (args.keys().asSequence().all { it in setOf("url", "max_chars") } && str("url", 2048, true) &&
                 int("max_chars", 200, 50_000)) null else "invalid fetch_url arguments"
+            name == "workbench.write" -> if (args.keys().asSequence().all { it in setOf("content", "append") } &&
+                str("content", 32_000, true) && args.opt("append").let { it == null || it is Boolean })
+                null else "invalid workbench.write arguments"
+            name == "workbench.read" -> if (args.length() == 0) null else "workbench.read takes no arguments"
+            name.startsWith("mcp.") -> if (args.toString().length <= 8_000) null else "mcp arguments too large"
+            else -> "unknown host tool"
         }
     }
 

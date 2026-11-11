@@ -44,7 +44,8 @@ object AgentWire {
     /** The single choke point every tool receipt passes through on its way to the model. */
     fun toolMessageContent(tool: String, receipt: JSONObject): String {
         val body = modelReceipt(receipt).toString()
-        return if (tool in UNTRUSTED_TOOLS) externalBoundary(tool, body) else body
+        val untrusted = tool in UNTRUSTED_TOOLS || tool.startsWith("mcp.")
+        return if (untrusted) externalBoundary(tool, body) else body
     }
 
     /**
