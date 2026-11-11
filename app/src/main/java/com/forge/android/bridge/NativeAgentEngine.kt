@@ -157,6 +157,19 @@ class NativeAgentEngine(
                     historyChars += bounded.length
                 }
             }
+            // always 式分级记忆（仅 chat）：按任务嵌入检索过往问答，注入在
+            // 稳定历史之后、任务之前的尾部——不回写，前缀缓存无损；桥不在则跳过。
+            var taskVec: List<Double>? = null
+            if (mode == "chat") {
+                ChatMemory.embed(task)?.let { vec ->
+                    taskVec = vec
+                    ChatMemory.renderBlock(ChatMemory.topK(vec, ChatMemory.load(chatMemoryFile)))?.let { block ->
+                        messages += JSONObject().put("role", "user").put("content", block)
+                        emit(JSONObject().put("type", "memory_injected").put("mode", "chat")
+                            .put("run_id", runId).put("task_id", taskId))
+                    }
+                }
+            }
             messages += JSONObject().put("role", "user").put("content", task)
             appendJournal(journal, JSONObject().put("type", "run_started").put("run_id", runId).put("task_id", taskId).put("task", task))
 
@@ -241,6 +254,13 @@ class NativeAgentEngine(
                 }
             }
             currentCoroutineContext().ensureActive()
+            if (mode == "chat" && completed && finalAnswer.isNotBlank()) {
+                // 入库复用开局的嵌入向量（已归一化语义），零额外嵌入调用
+                taskVec?.let { vec ->
+                    ChatMemory.append(chatMemoryFile, ChatMemory.Entry(
+                        "Q: " + task.take(600) + "\nA: " + finalAnswer.take(900), vec, System.currentTimeMillis()))
+                }
+            }
             finishDone(identity, finalAnswer, steps, if (completed) "final" else "max_steps", usageTotal)
         } catch (_: CancellationException) {
             appendJournal(journal, JSONObject().put("type", "run_failed").put("execution_state", "cancelled").put("run_id", runId))
@@ -449,6 +469,7 @@ class NativeAgentEngine(
     }
 
     private val workbenchFile get() = File(home, "workbench.txt")
+    private val chatMemoryFile get() = File(home, "chat-memory.json")
     private val mcp by lazy { McpClient.client() }
 
     private fun workbenchRead(): String =
