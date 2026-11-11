@@ -58,7 +58,7 @@ object McpClient {
         return JSONObject()
             .put("type", "function")
             .put("function", JSONObject()
-                .put("name", "mcp.$connector.$rawName")
+                .put("name", AgentWire.wireName("mcp.$connector.$rawName"))  // wire 名；内部名由调用方随行持有
                 .put("description", tool.optString("description", "MCP tool $rawName from connector $connector").take(400))
                 .put("parameters", params))
     }

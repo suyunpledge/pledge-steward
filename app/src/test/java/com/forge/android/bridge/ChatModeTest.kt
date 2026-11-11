@@ -20,9 +20,20 @@ class ChatModeTest {
             .put("description", "weather forecast"))
         assertNotNull(mcp)
         val tools = ChatMode.chatToolDefinitions(listOf(mcp!!))
-        assertEquals(listOf("web_search", "fetch_url", "workbench.write", "workbench.read",
-            "mcp.weather.get_forecast"), names(tools))
+        // 信封上是 wire 名（下划线）——OpenAI 兼容接口只认 ^[a-zA-Z0-9_-]+$
+        assertEquals(listOf("web_search", "fetch_url", "workbench_write", "workbench_read",
+            "mcp_weather_get_forecast"), names(tools))
         assertFalse(names(tools).any { it.startsWith("android") })
+        assertFalse(names(tools).any { "." in it })
+    }
+
+    @Test
+    fun wireNames_resolveBackToInternal() {
+        val known = ChatMode.chatToolNames(listOf("mcp.echo.hello"))
+        // 模型回传 wire 名 → 解析回内部名（带点），才能过 mcp. 前缀门禁与分发
+        assertEquals("mcp.echo.hello", AgentWire.resolveToolName("mcp_echo_hello", known))
+        assertEquals("workbench.write", AgentWire.resolveToolName("workbench_write", known))
+        assertTrue(ChatMode.isChatTool(AgentWire.resolveToolName("mcp_echo_hello", known)))
     }
 
     @Test

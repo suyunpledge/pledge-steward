@@ -170,11 +170,11 @@ class NativeAgentEngine(
             for (step in 0 until MAX_STEPS) {
                 currentCoroutineContext().ensureActive()
                 steps = step + 1
-                val chatEnvelopes = if (mode == "chat") mcpToolEnvelopes() else emptyList()
+                val chatTools = if (mode == "chat") mcpToolEnvelopes() else emptyList<Pair<String, JSONObject>>()
                 val runKnownTools: Set<String> = if (mode == "chat")
-                    ChatMode.chatToolNames(chatEnvelopes) else capabilities + HOST_TOOLS
+                    ChatMode.chatToolNames(chatTools.map { it.first }) else capabilities + HOST_TOOLS
                 val response = requestModel(provider, messages,
-                    if (mode == "chat") ChatMode.chatToolDefinitions(chatEnvelopes) else toolDefinitions())
+                    if (mode == "chat") ChatMode.chatToolDefinitions(chatTools.map { it.second }) else toolDefinitions())
                 currentCoroutineContext().ensureActive()
                 if (response.message == null) {
                     finishFailure(identity, response.error ?: "模型请求失败", "model_request_failed")
@@ -338,7 +338,9 @@ class NativeAgentEngine(
     }
 
     private fun validateTool(name: String, args: JSONObject): String? {
-        if (name in HOST_TOOLS) return validateHostTool(name, args)
+        // chat 工具（workbench.*/mcp.*）也是主机工具：参数校验走 validateHostTool，
+        // 不能落到设备能力集检查——否则 chat 工具会被误判 "capability unavailable"。
+        if (name in HOST_TOOLS || ChatMode.isHostTool(name)) return validateHostTool(name, args)
         if (!capabilities.contains(name)) return "capability unavailable"
         if (name in setOf("android.ui.click", "android.ui.swipe", "android.ui.input", "android.app.launch") && !approvalAvailable)
             return "device input approval is unavailable"
@@ -462,18 +464,22 @@ class NativeAgentEngine(
         return JSONObject().put("bytes", merged.length)
     }
 
-    @Volatile private var mcpCache: List<JSONObject>? = null
+    @Volatile private var mcpCache: List<Pair<String, JSONObject>>? = null
     @Volatile private var mcpCacheAt = 0L
 
-    /** url 型连接器的 MCP 工具信封（5 分钟缓存；stdio 连接器 Android 上不可执行，跳过）。 */
-    private suspend fun mcpToolEnvelopes(): List<JSONObject> {
+    /** url 型连接器的 MCP 工具：内部名（mcp.<连接器>.<工具>，门禁/分发用）+ wire 名信封
+     *  （下划线，发模型用；OpenAI 兼容接口只认 ^[a-zA-Z0-9_-]+$）。5 分钟缓存；
+     *  stdio 连接器 Android 沙箱不可执行，跳过。 */
+    private suspend fun mcpToolEnvelopes(): List<Pair<String, JSONObject>> {
         val now = System.currentTimeMillis()
         mcpCache?.let { if (now - mcpCacheAt < 300_000) return it }
         val envs = McpClient.loadConnectors(File(home, "mcp_connectors.json")).flatMap { c ->
             runCatching { McpClient.listTools(mcp, c.url) }.getOrNull()?.let { tools ->
-                (0 until tools.length()).mapNotNull { tools.optJSONObject(it) }
-                    .mapNotNull { McpClient.envelope(c.name, it) }
-            } ?: emptyList<JSONObject>()
+                (0 until tools.length()).mapNotNull { tools.optJSONObject(it) }.mapNotNull { raw ->
+                    val internal = "mcp." + c.name + "." + raw.optString("name").trim()
+                    McpClient.envelope(c.name, raw)?.let { internal to it }
+                }
+            } ?: emptyList<Pair<String, JSONObject>>()
         }
         mcpCache = envs
         mcpCacheAt = now

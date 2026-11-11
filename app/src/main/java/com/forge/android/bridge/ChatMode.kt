@@ -57,7 +57,7 @@ object ChatMode {
         out.put(obj(
             "type" to "function",
             "function" to obj(
-                "name" to "workbench.write",
+                "name" to AgentWire.wireName("workbench.write"),
                 "description" to "Replace (or append to) the plan draft on the user's workbench. Use this whenever a plan/solution is ready.",
                 "parameters" to obj("type" to "object", "properties" to obj(
                     "content" to textParam("workbench draft content"),
@@ -67,7 +67,7 @@ object ChatMode {
         out.put(obj(
             "type" to "function",
             "function" to obj(
-                "name" to "workbench.read",
+                "name" to AgentWire.wireName("workbench.read"),
                 "description" to "Read the current workbench draft.",
                 "parameters" to obj("type" to "object", "properties" to obj())
             )))
@@ -75,6 +75,8 @@ object ChatMode {
         return out
     }
 
-    fun chatToolNames(mcpEnvelopes: List<JSONObject>): Set<String> =
-        HOST_TOOLS + mcpEnvelopes.mapNotNull { it.optJSONObject("function")?.optString("name") }
+    /** 解析层已知集：内部名（带点）。信封上的名字是 wire 名（下划线），两者经
+     *  AgentWire.resolveToolName 映射回内部名后再进门禁与分发。 */
+    fun chatToolNames(mcpInternalNames: Collection<String>): Set<String> =
+        HOST_TOOLS + mcpInternalNames
 }
